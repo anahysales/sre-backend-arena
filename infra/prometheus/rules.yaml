@@ -1,0 +1,36 @@
+groups:
+  - name: deathstar-slo
+    rules:
+
+      # LATÊNCIA (p95 > 300ms)
+      - record: job:http_request_duration_seconds:p95
+        expr: histogram_quantile(
+          0.95,
+          sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+        )
+
+      # TAXA DE ERRO POR ENDPOINT
+      - record: job:http_error_rate_by_path
+        expr: |
+          sum by (path) (rate(http_requests_total{status=~"5.."}[5m]))
+          /
+          sum by (path) (rate(http_requests_total[5m]))
+
+  - name: deathstar-alerts
+    rules:
+
+      - alert: HighLatency
+        expr: job:http_request_duration_seconds:p95 > 0.3
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latência alta no serviço Deathstar"
+
+      - alert: HighErrorRate
+        expr: job:http_error_rate_by_path > 0.01
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Taxa de erro acima do aceitável"
