@@ -4,6 +4,18 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
+	"sync"
+)
+
+type CacheItem struct {
+	data      map[string]string
+	expiresAt time.Time
+}
+
+var (
+	starshipCache = make(map[string]CacheItem)
+	cacheMutex    sync.RWMutex
 )
 
 func main() {
@@ -15,6 +27,49 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func getStarshipInfo(shipId string) (map[string]string, int) {
+	url := "https://swapi.py4e.com/api/starships/" + shipId + "/"
+
+	client := http.Client{
+		Timeout: 3 * time.Second,
+	}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		println("ERROR REQUEST:", err.Error())
+		return nil, http.StatusBadGateway
+	}
+	defer resp.Body.Close()
+
+	println("STATUS CODE:", resp.StatusCode)
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, http.StatusBadGateway
+	}
+
+	var data struct {
+		Name       string `json:"name"`
+		Model      string `json:"model"`
+		Crew       string `json:"crew"`
+		Passengers string `json:"passengers"`
+	}
+
+	err = json.NewDecoder(resp.Body).Decode(&data)
+	if err != nil {
+		println("ERROR DECODE:", err.Error())
+		return nil, http.StatusBadGateway
+	}
+
+	result := map[string]string{
+		"ship":       data.Name,
+		"model":      data.Model,
+		"crew":       data.Crew,
+		"passengers": data.Passengers,
+	}
+
+	return result, 0
 }
 
 func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
@@ -31,13 +86,48 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 🔥 NORMALIZAÇÃO DO ID (CORREÇÃO CRÍTICA)
 	shipId := strings.TrimPrefix(path, prefix)
+	shipId = strings.TrimSpace(shipId)
+	shipId = strings.TrimSuffix(shipId, "/")
+
 	if shipId == "" {
 		http.NotFound(w, r)
 		return
 	}
 
+	// 🔍 DEBUG (IMPORTANTE PRA VALIDAR CACHE)
+	println("SHIP ID:", shipId)
+
+	// 🔵 CACHE HIT
+	cacheMutex.RLock()
+	cached, ok := starshipCache[shipId]
+	cacheMutex.RUnlock()
+
+	if ok && time.Now().Before(cached.expiresAt) {
+		println("CACHE HIT")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(cached.data)
+		return
+	}
+
+	// 🔴 CACHE MISS
+	println("CACHE MISS")
+
+	info, errStatus := getStarshipInfo(shipId)
+	if errStatus != 0 {
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+
+	// 🔵 CACHE WRITE (30s TTL)
+	cacheMutex.Lock()
+	starshipCache[shipId] = CacheItem{
+		data:      info,
+		expiresAt: time.Now().Add(30 * time.Second),
+	}
+	cacheMutex.Unlock()
+
 	w.Header().Set("Content-Type", "application/json")
-	response := map[string]string{"shipId": shipId}
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(info)
 }
