@@ -14,8 +14,11 @@ type CacheItem struct {
 }
 
 var (
+	// cache em memória para reduzir chamadas na SWAPI
 	starshipCache = make(map[string]CacheItem)
-	cacheMutex    sync.RWMutex
+
+	// garante segurança em concorrência
+	cacheMutex sync.RWMutex
 )
 
 func main() {
@@ -29,6 +32,7 @@ func main() {
 	}
 }
 
+// busca informações da nave na SWAPI com retry e timeout
 func getStarshipInfo(shipId string) (map[string]string, int) {
 	url := "https://swapi.py4e.com/api/starships/" + shipId + "/"
 
@@ -39,12 +43,13 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 	var resp *http.Response
 	var err error
 
-	// 🔁 RETRY (2 tentativas)
+	// tenta recuperar dados externos com tolerância a falhas
 	for attempt := 1; attempt <= 2; attempt++ {
 		println("TENTATIVA:", attempt)
 
 		resp, err = client.Get(url)
 
+		// sucesso na chamada externa
 		if err == nil && resp.StatusCode == http.StatusOK {
 			break
 		}
@@ -58,7 +63,7 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	// ❌ falhou após retry
+	// se todas as tentativas falharem, retorna erro controlado
 	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
 		println("ERRO APÓS RETRY")
 		return nil, http.StatusBadGateway
@@ -77,10 +82,11 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 
 	err = json.NewDecoder(resp.Body).Decode(&data)
 	if err != nil {
-		println("ERROR DECODE:", err.Error())
+		println("ERRO AO DECODIFICAR RESPOSTA:", err.Error())
 		return nil, http.StatusBadGateway
 	}
 
+	// normaliza resposta da SWAPI para formato interno
 	result := map[string]string{
 		"ship":       data.Name,
 		"model":      data.Model,
@@ -91,6 +97,7 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 	return result, 0
 }
 
+// handler principal da análise da estrela da morte
 func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
@@ -105,7 +112,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 🔥 normalização do ID
+	// normaliza o id da nave recebido na URL
 	shipId := strings.TrimPrefix(path, prefix)
 	shipId = strings.TrimSpace(shipId)
 	shipId = strings.TrimSuffix(shipId, "/")
@@ -117,19 +124,21 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 
 	println("SHIP ID:", shipId)
 
-	// 🔵 CACHE HIT
+	// leitura segura do cache
 	cacheMutex.RLock()
 	cached, ok := starshipCache[shipId]
 	cacheMutex.RUnlock()
 
+	// valida se existe cache válido
 	if ok && time.Now().Before(cached.expiresAt) {
 		println("CACHE HIT")
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(cached.data)
 		return
 	}
 
-	// 🔴 CACHE MISS
+	// caso não exista cache válido, busca na API externa
 	println("CACHE MISS")
 
 	info, errStatus := getStarshipInfo(shipId)
@@ -138,7 +147,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 🔵 CACHE WRITE (TTL 30s)
+	// escreve no cache com tempo de expiração
 	cacheMutex.Lock()
 	starshipCache[shipId] = CacheItem{
 		data:      info,
@@ -146,6 +155,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	cacheMutex.Unlock()
 
+	// retorna resposta final para o cliente
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(info)
 }
