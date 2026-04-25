@@ -36,18 +36,37 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 		Timeout: 3 * time.Second,
 	}
 
-	resp, err := client.Get(url)
-	if err != nil {
-		println("ERROR REQUEST:", err.Error())
+	var resp *http.Response
+	var err error
+
+	// 🔁 RETRY (2 tentativas)
+	for attempt := 1; attempt <= 2; attempt++ {
+		println("TENTATIVA:", attempt)
+
+		resp, err = client.Get(url)
+
+		if err == nil && resp.StatusCode == http.StatusOK {
+			break
+		}
+
+		if resp != nil {
+			resp.Body.Close()
+		}
+
+		println("FALHA NA TENTATIVA:", attempt)
+
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// ❌ falhou após retry
+	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
+		println("ERRO APÓS RETRY")
 		return nil, http.StatusBadGateway
 	}
+
 	defer resp.Body.Close()
 
 	println("STATUS CODE:", resp.StatusCode)
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, http.StatusBadGateway
-	}
 
 	var data struct {
 		Name       string `json:"name"`
@@ -86,7 +105,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 🔥 NORMALIZAÇÃO DO ID (CORREÇÃO CRÍTICA)
+	// 🔥 normalização do ID
 	shipId := strings.TrimPrefix(path, prefix)
 	shipId = strings.TrimSpace(shipId)
 	shipId = strings.TrimSuffix(shipId, "/")
@@ -96,7 +115,6 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 🔍 DEBUG (IMPORTANTE PRA VALIDAR CACHE)
 	println("SHIP ID:", shipId)
 
 	// 🔵 CACHE HIT
@@ -120,7 +138,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 🔵 CACHE WRITE (30s TTL)
+	// 🔵 CACHE WRITE (TTL 30s)
 	cacheMutex.Lock()
 	starshipCache[shipId] = CacheItem{
 		data:      info,
