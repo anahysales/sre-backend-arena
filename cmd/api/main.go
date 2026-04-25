@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 	"sync"
+	"fmt"
 )
 
 type CacheItem struct {
@@ -32,6 +33,19 @@ func main() {
 	}
 }
 
+// log estruturado simples para rastrear eventos do sistema
+func logEvent(event string, shipId string, extra map[string]interface{}) {
+	log := map[string]interface{}{
+		"event":     event,
+		"ship_id":   shipId,
+		"timestamp": time.Now().Format(time.RFC3339),
+		"extra":     extra,
+	}
+
+	data, _ := json.Marshal(log)
+	fmt.Println(string(data))
+}
+
 // busca informações da nave na SWAPI com retry e timeout
 func getStarshipInfo(shipId string) (map[string]string, int) {
 	url := "https://swapi.py4e.com/api/starships/" + shipId + "/"
@@ -45,11 +59,12 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 
 	// tenta recuperar dados externos com tolerância a falhas
 	for attempt := 1; attempt <= 2; attempt++ {
-		println("TENTATIVA:", attempt)
+		logEvent("retry_attempt", shipId, map[string]interface{}{
+			"attempt": attempt,
+		})
 
 		resp, err = client.Get(url)
 
-		// sucesso na chamada externa
 		if err == nil && resp.StatusCode == http.StatusOK {
 			break
 		}
@@ -58,20 +73,20 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 			resp.Body.Close()
 		}
 
-		println("FALHA NA TENTATIVA:", attempt)
-
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	// se todas as tentativas falharem, retorna erro controlado
+	// falha após tentativas
 	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
-		println("ERRO APÓS RETRY")
+		logEvent("swapi_error", shipId, nil)
 		return nil, http.StatusBadGateway
 	}
 
 	defer resp.Body.Close()
 
-	println("STATUS CODE:", resp.StatusCode)
+	logEvent("swapi_response", shipId, map[string]interface{}{
+		"status_code": resp.StatusCode,
+	})
 
 	var data struct {
 		Name       string `json:"name"`
@@ -82,11 +97,10 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 
 	err = json.NewDecoder(resp.Body).Decode(&data)
 	if err != nil {
-		println("ERRO AO DECODIFICAR RESPOSTA:", err.Error())
+		logEvent("decode_error", shipId, nil)
 		return nil, http.StatusBadGateway
 	}
 
-	// normaliza resposta da SWAPI para formato interno
 	result := map[string]string{
 		"ship":       data.Name,
 		"model":      data.Model,
@@ -112,7 +126,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// normaliza o id da nave recebido na URL
+	// normaliza o id da nave
 	shipId := strings.TrimPrefix(path, prefix)
 	shipId = strings.TrimSpace(shipId)
 	shipId = strings.TrimSuffix(shipId, "/")
@@ -122,24 +136,22 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	println("SHIP ID:", shipId)
-
 	// leitura segura do cache
 	cacheMutex.RLock()
 	cached, ok := starshipCache[shipId]
 	cacheMutex.RUnlock()
 
-	// valida se existe cache válido
+	// cache hit válido
 	if ok && time.Now().Before(cached.expiresAt) {
-		println("CACHE HIT")
+		logEvent("cache_hit", shipId, nil)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(cached.data)
 		return
 	}
 
-	// caso não exista cache válido, busca na API externa
-	println("CACHE MISS")
+	// cache miss
+	logEvent("cache_miss", shipId, nil)
 
 	info, errStatus := getStarshipInfo(shipId)
 	if errStatus != 0 {
@@ -147,7 +159,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// escreve no cache com tempo de expiração
+	// grava no cache com TTL
 	cacheMutex.Lock()
 	starshipCache[shipId] = CacheItem{
 		data:      info,
@@ -155,7 +167,6 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	cacheMutex.Unlock()
 
-	// retorna resposta final para o cliente
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(info)
 }
