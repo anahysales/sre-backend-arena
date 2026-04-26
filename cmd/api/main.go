@@ -8,6 +8,7 @@ import (
 	"sync"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -69,15 +70,19 @@ func main() {
 	prometheus.MustRegister(httpDuration)
 
 	http.HandleFunc(route+"/", deathstarAnalysisHandler)
-	http.HandleFunc("/health", healthHandler) // ✅ NOVO
+	http.HandleFunc("/health", healthHandler)
 	http.Handle("/metrics", promhttp.Handler())
 
 	panic(http.ListenAndServe(":8081", nil))
 }
 
-func logEvent(event string, shipId string, extra map[string]interface{}) {
+// =========================
+// LOG COM TRACE ID
+// =========================
+func logEvent(event string, traceId string, shipId string, extra map[string]interface{}) {
 	log := map[string]interface{}{
 		"event":     event,
+		"trace_id":  traceId,
 		"ship_id":   shipId,
 		"timestamp": time.Now().Format(time.RFC3339),
 		"extra":     extra,
@@ -87,7 +92,7 @@ func logEvent(event string, shipId string, extra map[string]interface{}) {
 	fmt.Println(string(data))
 }
 
-func getStarshipInfo(shipId string) (map[string]string, int) {
+func getStarshipInfo(traceId string, shipId string) (map[string]string, int) {
 	url := "https://swapi.py4e.com/api/starships/" + shipId + "/"
 
 	client := http.Client{Timeout: 3 * time.Second}
@@ -97,10 +102,9 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 
 	for attempt := 1; attempt <= 2; attempt++ {
 
-		// RATE LIMIT
 		<-rateLimiter
 
-		logEvent("retry_attempt", shipId, map[string]interface{}{
+		logEvent("retry_attempt", traceId, shipId, map[string]interface{}{
 			"attempt": attempt,
 		})
 
@@ -114,18 +118,17 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 			resp.Body.Close()
 		}
 
-		// BACKOFF EXPONENCIAL
 		time.Sleep(time.Duration(200*attempt) * time.Millisecond)
 	}
 
 	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
-		logEvent("swapi_error", shipId, nil)
+		logEvent("swapi_error", traceId, shipId, nil)
 		return nil, http.StatusBadGateway
 	}
 
 	defer resp.Body.Close()
 
-	logEvent("swapi_response", shipId, map[string]interface{}{
+	logEvent("swapi_response", traceId, shipId, map[string]interface{}{
 		"status_code": resp.StatusCode,
 	})
 
@@ -137,7 +140,7 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		logEvent("decode_error", shipId, nil)
+		logEvent("decode_error", traceId, shipId, nil)
 		return nil, http.StatusBadGateway
 	}
 
@@ -151,6 +154,12 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 
 func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+
+	// =========================
+	// TRACE ID
+	// =========================
+	traceId := uuid.New().String()
+	w.Header().Set("X-Trace-Id", traceId)
 
 	if r.Method != http.MethodGet {
 		httpRequestsTotal.WithLabelValues(route, "405").Inc()
@@ -180,7 +189,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	if ok && time.Now().Before(cached.expiresAt) {
 		cacheHitsMetric.Inc()
 
-		logEvent("cache_hit", shipId, nil)
+		logEvent("cache_hit", traceId, shipId, nil)
 
 		httpRequestsTotal.WithLabelValues(route, "200").Inc()
 		httpDuration.WithLabelValues(route).Observe(time.Since(start).Seconds())
@@ -191,9 +200,9 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cacheMissMetric.Inc()
-	logEvent("cache_miss", shipId, nil)
+	logEvent("cache_miss", traceId, shipId, nil)
 
-	info, errStatus := getStarshipInfo(shipId)
+	info, errStatus := getStarshipInfo(traceId, shipId)
 	if errStatus != 0 {
 		httpRequestsTotal.WithLabelValues(route, "502").Inc()
 		httpDuration.WithLabelValues(route).Observe(time.Since(start).Seconds())
