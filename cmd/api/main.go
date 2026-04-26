@@ -20,19 +20,8 @@ type CacheItem struct {
 }
 
 var (
-	// cache em memória para reduzir chamadas na SWAPI
 	starshipCache = make(map[string]CacheItem)
-
-	// garante segurança em concorrência
-	cacheMutex sync.RWMutex
-
-	// métricas simples legadas (mantidas para debug)
-	cacheHits int64
-	cacheMiss int64
-
-	// =========================
-	// PROMETHEUS METRICS
-	// =========================
+	cacheMutex    sync.RWMutex
 
 	httpRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -77,10 +66,7 @@ func main() {
 	http.HandleFunc(route+"/", deathstarAnalysisHandler)
 	http.Handle("/metrics", promhttp.Handler())
 
-	err := http.ListenAndServe(":8081", nil)
-	if err != nil {
-		panic(err)
-	}
+	panic(http.ListenAndServe(":8081", nil))
 }
 
 func logEvent(event string, shipId string, extra map[string]interface{}) {
@@ -98,14 +84,13 @@ func logEvent(event string, shipId string, extra map[string]interface{}) {
 func getStarshipInfo(shipId string) (map[string]string, int) {
 	url := "https://swapi.py4e.com/api/starships/" + shipId + "/"
 
-	client := http.Client{
-		Timeout: 3 * time.Second,
-	}
+	client := http.Client{Timeout: 3 * time.Second}
 
 	var resp *http.Response
 	var err error
 
 	for attempt := 1; attempt <= 2; attempt++ {
+
 		logEvent("retry_attempt", shipId, map[string]interface{}{
 			"attempt": attempt,
 		})
@@ -120,7 +105,10 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 			resp.Body.Close()
 		}
 
-		time.Sleep(200 * time.Millisecond)
+		// retry mais leve (evita inflar latência)
+		if attempt == 1 {
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 
 	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
@@ -141,8 +129,7 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 		Passengers string `json:"passengers"`
 	}
 
-	err = json.NewDecoder(resp.Body).Decode(&data)
-	if err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		logEvent("decode_error", shipId, nil)
 		return nil, http.StatusBadGateway
 	}
@@ -159,26 +146,23 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		httpRequestsTotal.WithLabelValues(route, "405").Inc()
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	path := r.URL.Path
-
-	if !strings.HasPrefix(path, route+"/") {
-		http.NotFound(w, r)
+	if !strings.HasPrefix(r.URL.Path, route+"/") {
 		httpRequestsTotal.WithLabelValues(route, "404").Inc()
+		http.NotFound(w, r)
 		return
 	}
 
-	shipId := strings.TrimPrefix(path, route+"/")
-	shipId = strings.TrimSpace(shipId)
-	shipId = strings.TrimSuffix(shipId, "/")
+	shipId := strings.TrimPrefix(r.URL.Path, route+"/")
+	shipId = strings.Trim(shipId, "/ ")
 
 	if shipId == "" {
-		http.NotFound(w, r)
 		httpRequestsTotal.WithLabelValues(route, "404").Inc()
+		http.NotFound(w, r)
 		return
 	}
 
@@ -187,7 +171,6 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	cacheMutex.RUnlock()
 
 	if ok && time.Now().Before(cached.expiresAt) {
-		cacheHits++
 		cacheHitsMetric.Inc()
 
 		logEvent("cache_hit", shipId, nil)
@@ -200,9 +183,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cacheMiss++
 	cacheMissMetric.Inc()
-
 	logEvent("cache_miss", shipId, nil)
 
 	info, errStatus := getStarshipInfo(shipId)
@@ -217,7 +198,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	cacheMutex.Lock()
 	starshipCache[shipId] = CacheItem{
 		data:      info,
-		expiresAt: time.Now().Add(30 * time.Second),
+		expiresAt: time.Now().Add(2 * time.Minute), // 🔥 melhoria de cache
 	}
 	cacheMutex.Unlock()
 
