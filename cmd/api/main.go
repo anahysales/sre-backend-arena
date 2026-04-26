@@ -69,6 +69,7 @@ func main() {
 	prometheus.MustRegister(httpDuration)
 
 	http.HandleFunc(route+"/", deathstarAnalysisHandler)
+	http.HandleFunc("/health", healthHandler) // ✅ NOVO
 	http.Handle("/metrics", promhttp.Handler())
 
 	panic(http.ListenAndServe(":8081", nil))
@@ -213,4 +214,21 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(info)
+}
+
+// =========================
+// HEALTH CHECK
+// =========================
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	client := http.Client{Timeout: 1 * time.Second}
+
+	resp, err := client.Get("https://swapi.py4e.com/api/starships/9/")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		http.Error(w, "dependency failure", http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("ok"))
 }
