@@ -96,7 +96,7 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 
 	for attempt := 1; attempt <= 2; attempt++ {
 
-		// 🔴 RATE LIMIT AQUI
+		// RATE LIMIT
 		<-rateLimiter
 
 		logEvent("retry_attempt", shipId, map[string]interface{}{
@@ -113,7 +113,8 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 			resp.Body.Close()
 		}
 
-		time.Sleep(200 * time.Millisecond)
+		// BACKOFF EXPONENCIAL
+		time.Sleep(time.Duration(200*attempt) * time.Millisecond)
 	}
 
 	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
