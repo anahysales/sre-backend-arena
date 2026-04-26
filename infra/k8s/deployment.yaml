@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deathstar-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: deathstar-api
+  template:
+    metadata:
+      labels:
+        app: deathstar-api
+    spec:
+      containers:
+        - name: api
+          image: sre-backend-arena_api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8081
+          resources:
+            limits:
+              cpu: "500m"
+              memory: "128Mi"
+            requests:
+              cpu: "200m"
+              memory: "64Mi"
