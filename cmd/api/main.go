@@ -7,6 +7,7 @@ import (
 	"time"
 	"sync"
 	"fmt"
+	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
@@ -24,10 +25,7 @@ var (
 	starshipCache = make(map[string]CacheItem)
 	cacheMutex    sync.RWMutex
 
-	// =========================
-	// RATE LIMIT (GLOBAL)
-	// =========================
-	rateLimiter = time.Tick(200 * time.Millisecond) // 5 req/s
+	rateLimiter = time.Tick(200 * time.Millisecond)
 
 	httpRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -77,7 +75,7 @@ func main() {
 }
 
 // =========================
-// LOG COM TRACE ID
+// LOG
 // =========================
 func logEvent(event string, traceId string, shipId string, extra map[string]interface{}) {
 	log := map[string]interface{}{
@@ -92,6 +90,47 @@ func logEvent(event string, traceId string, shipId string, extra map[string]inte
 	fmt.Println(string(data))
 }
 
+// =========================
+// THREAT SCORE
+// =========================
+func calculateThreat(crewStr, passengersStr string) (int, string) {
+	parse := func(s string) int {
+		s = strings.ReplaceAll(s, ",", "")
+		val, err := strconv.Atoi(s)
+		if err != nil {
+			return 0
+		}
+		return val
+	}
+
+	crew := parse(crewStr)
+	passengers := parse(passengersStr)
+
+	score := (crew + passengers) / 10000
+
+	if score > 100 {
+		score = 100
+	}
+
+	classification := ""
+
+	switch {
+	case score < 20:
+		classification = "low_threat"
+	case score < 50:
+		classification = "medium_threat"
+	case score < 80:
+		classification = "high_threat"
+	default:
+		classification = "galactic_superweapon"
+	}
+
+	return score, classification
+}
+
+// =========================
+// SWAPI
+// =========================
 func getStarshipInfo(traceId string, shipId string) (map[string]string, int) {
 	url := "https://swapi.py4e.com/api/starships/" + shipId + "/"
 
@@ -152,12 +191,12 @@ func getStarshipInfo(traceId string, shipId string) (map[string]string, int) {
 	}, 0
 }
 
+// =========================
+// HANDLER
+// =========================
 func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
-	// =========================
-	// TRACE ID
-	// =========================
 	traceId := uuid.New().String()
 	w.Header().Set("X-Trace-Id", traceId)
 
@@ -176,25 +215,17 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	shipId := strings.TrimPrefix(r.URL.Path, route+"/")
 	shipId = strings.Trim(shipId, "/ ")
 
-	if shipId == "" {
-		httpRequestsTotal.WithLabelValues(route, "404").Inc()
-		http.NotFound(w, r)
-		return
-	}
-
 	cacheMutex.RLock()
 	cached, ok := starshipCache[shipId]
 	cacheMutex.RUnlock()
 
 	if ok && time.Now().Before(cached.expiresAt) {
 		cacheHitsMetric.Inc()
-
 		logEvent("cache_hit", traceId, shipId, nil)
 
 		httpRequestsTotal.WithLabelValues(route, "200").Inc()
 		httpDuration.WithLabelValues(route).Observe(time.Since(start).Seconds())
 
-		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(cached.data)
 		return
 	}
@@ -205,10 +236,19 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	info, errStatus := getStarshipInfo(traceId, shipId)
 	if errStatus != 0 {
 		httpRequestsTotal.WithLabelValues(route, "502").Inc()
-		httpDuration.WithLabelValues(route).Observe(time.Since(start).Seconds())
-
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
+	}
+
+	score, classification := calculateThreat(info["crew"], info["passengers"])
+
+	response := map[string]interface{}{
+		"ship":           info["ship"],
+		"model":          info["model"],
+		"crew":           info["crew"],
+		"passengers":     info["passengers"],
+		"threatScore":    score,
+		"classification": classification,
 	}
 
 	cacheMutex.Lock()
@@ -222,7 +262,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	httpDuration.WithLabelValues(route).Observe(time.Since(start).Seconds())
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(info)
+	json.NewEncoder(w).Encode(response)
 }
 
 // =========================

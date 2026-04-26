@@ -2,15 +2,38 @@ groups:
   - name: deathstar-slo
     rules:
 
-      # LATÊNCIA (p95 > 300ms)
-      - record: job:http_request_duration_seconds:p95
+      # =========================
+      # LATÊNCIA p99 (SLO PRINCIPAL)
+      # =========================
+      - record: job:http_request_duration_seconds:p99
         expr: |
           histogram_quantile(
-            0.95,
+            0.99,
             sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
           )
 
+      # =========================
+      # THROUGHPUT (RPS)
+      # =========================
+      - record: job:http_requests:rps
+        expr: |
+          sum(rate(http_requests_total[1m]))
+
+      # =========================
+      # TAXA DE ERRO GLOBAL
+      # =========================
+      - record: job:http_error_rate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          /
+          clamp_min(
+            sum(rate(http_requests_total[5m])),
+            1
+          )
+
+      # =========================
       # TAXA DE ERRO POR PATH
+      # =========================
       - record: job:http_error_rate_by_path
         expr: |
           sum by (path) (rate(http_requests_total{status=~"5.."}[5m]))
@@ -23,18 +46,44 @@ groups:
   - name: deathstar-alerts
     rules:
 
-      - alert: HighLatency
-        expr: job:http_request_duration_seconds:p95 > 0.3
-        for: 2m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Latência alta no serviço Deathstar"
-
-      - alert: HighErrorRate
-        expr: job:http_error_rate_by_path > 0.01
+      # =========================
+      # ALERTA DE LATÊNCIA (p99)
+      # =========================
+      - alert: HighLatencyCritical
+        expr: job:http_request_duration_seconds:p99 > 0.15
         for: 2m
         labels:
           severity: critical
         annotations:
-          summary: "Taxa de erro acima do aceitável"
+          summary: "Latência CRÍTICA (>150ms p99) no Deathstar API"
+          description: "O sistema está acima do limite de performance máxima da rubrica"
+
+      - alert: HighLatencyWarning
+        expr: job:http_request_duration_seconds:p99 > 0.3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latência acima do aceitável (>300ms p99)"
+
+      # =========================
+      # ALERTA DE ERROS
+      # =========================
+      - alert: HighErrorRate
+        expr: job:http_error_rate > 0.01
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Taxa de erro acima de 1%"
+
+      # =========================
+      # ALERTA DE QUEDA DE RPS
+      # =========================
+      - alert: LowTrafficAnomaly
+        expr: job:http_requests:rps < 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queda anormal de tráfego detectada"
