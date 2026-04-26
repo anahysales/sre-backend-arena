@@ -23,6 +23,11 @@ var (
 	starshipCache = make(map[string]CacheItem)
 	cacheMutex    sync.RWMutex
 
+	// =========================
+	// RATE LIMIT (GLOBAL)
+	// =========================
+	rateLimiter = time.Tick(200 * time.Millisecond) // 5 req/s
+
 	httpRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "http_requests_total",
@@ -91,6 +96,9 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 
 	for attempt := 1; attempt <= 2; attempt++ {
 
+		// 🔴 RATE LIMIT AQUI
+		<-rateLimiter
+
 		logEvent("retry_attempt", shipId, map[string]interface{}{
 			"attempt": attempt,
 		})
@@ -105,10 +113,7 @@ func getStarshipInfo(shipId string) (map[string]string, int) {
 			resp.Body.Close()
 		}
 
-		// retry mais leve (evita inflar latência)
-		if attempt == 1 {
-			time.Sleep(100 * time.Millisecond)
-		}
+		time.Sleep(200 * time.Millisecond)
 	}
 
 	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
@@ -198,7 +203,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	cacheMutex.Lock()
 	starshipCache[shipId] = CacheItem{
 		data:      info,
-		expiresAt: time.Now().Add(2 * time.Minute), // 🔥 melhoria de cache
+		expiresAt: time.Now().Add(30 * time.Second),
 	}
 	cacheMutex.Unlock()
 
