@@ -31,14 +31,14 @@ var (
 )
 
 // =========================
-// BULKHEAD (NOVO)
+// BULKHEAD
 // =========================
 var swapiSemaphore = make(chan struct{}, 20)
 
 // =========================
-// RATE LIMITER
+// RATE LIMITER (CORRIGIDO)
 // =========================
-var rateLimiter = time.Tick(200 * time.Millisecond)
+var rateLimiter = time.NewTicker(200 * time.Millisecond)
 
 // =========================
 // METRICS
@@ -128,29 +128,28 @@ func calculateThreat(crewStr, passengersStr string) (int, string) {
 		score = 100
 	}
 
-	classification := ""
-
 	switch {
 	case score < 20:
-		classification = "low_threat"
+		return score, "low_threat"
 	case score < 50:
-		classification = "medium_threat"
+		return score, "medium_threat"
 	case score < 80:
-		classification = "high_threat"
+		return score, "high_threat"
 	default:
-		classification = "galactic_superweapon"
+		return score, "galactic_superweapon"
 	}
-
-	return score, classification
 }
 
 // =========================
-// SWAPI (COM BULKHEAD)
+// SWAPI
 // =========================
 func getStarshipInfo(traceId string, shipId string) (map[string]string, int) {
 
-	url := "https://swapi.py4e.com/api/starships/" + shipId + "/"
+	if shipId == "" {
+		return nil, http.StatusBadRequest
+	}
 
+	url := "https://swapi.py4e.com/api/starships/" + shipId + "/"
 	client := http.Client{Timeout: 3 * time.Second}
 
 	var resp *http.Response
@@ -158,9 +157,8 @@ func getStarshipInfo(traceId string, shipId string) (map[string]string, int) {
 
 	for attempt := 1; attempt <= 2; attempt++ {
 
-		// 🔥 BULKHEAD AQUI
-		swapiSemaphore <- struct{}{}
-		<-rateLimiter
+		<-swapiSemaphore
+		<-rateLimiter.C
 
 		logEvent("retry_attempt", traceId, shipId, map[string]interface{}{
 			"attempt": attempt,
@@ -168,25 +166,23 @@ func getStarshipInfo(traceId string, shipId string) (map[string]string, int) {
 
 		resp, err = client.Get(url)
 
-		<-swapiSemaphore
+		if resp != nil {
+			defer resp.Body.Close()
+		}
 
-		if err == nil && resp.StatusCode == http.StatusOK {
+		if err == nil && resp != nil && resp.StatusCode == http.StatusOK {
+			swapiSemaphore <- struct{}{}
 			break
 		}
 
-		if resp != nil {
-			resp.Body.Close()
-		}
-
 		time.Sleep(time.Duration(200*attempt) * time.Millisecond)
+		swapiSemaphore <- struct{}{}
 	}
 
 	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
 		logEvent("swapi_error", traceId, shipId, nil)
 		return nil, http.StatusBadGateway
 	}
-
-	defer resp.Body.Close()
 
 	var data struct {
 		Name       string `json:"name"`
@@ -231,6 +227,11 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	shipId := strings.TrimPrefix(r.URL.Path, route+"/")
+	if shipId == "" {
+		status = "400"
+		http.Error(w, "missing ship id", http.StatusBadRequest)
+		return
+	}
 
 	cacheMutex.RLock()
 	cached, ok := starshipCache[shipId]
@@ -283,18 +284,9 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // =========================
-// HEALTH CHECK
+// HEALTH CHECK (AJUSTADO)
 // =========================
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	client := http.Client{Timeout: 1 * time.Second}
-
-	resp, err := client.Get("https://swapi.py4e.com/api/starships/9/")
-	if err != nil || resp.StatusCode != http.StatusOK {
-		http.Error(w, "dependency failure", http.StatusServiceUnavailable)
-		return
-	}
-	defer resp.Body.Close()
-
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
 }
