@@ -32,7 +32,7 @@ var (
 			Name: "http_requests_total",
 			Help: "Total de requisições HTTP",
 		},
-		[]string{"path", "status"},
+		[]string{"path", "method", "status"},
 	)
 
 	cacheHitsMetric = prometheus.NewCounter(
@@ -55,7 +55,7 @@ var (
 			Help:    "Duração das requisições HTTP",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"path"},
+		[]string{"path", "method", "status"},
 	)
 )
 
@@ -107,7 +107,6 @@ func calculateThreat(crewStr, passengersStr string) (int, string) {
 	passengers := parse(passengersStr)
 
 	score := (crew + passengers) / 10000
-
 	if score > 100 {
 		score = 100
 	}
@@ -140,7 +139,6 @@ func getStarshipInfo(traceId string, shipId string) (map[string]string, int) {
 	var err error
 
 	for attempt := 1; attempt <= 2; attempt++ {
-
 		<-rateLimiter
 
 		logEvent("retry_attempt", traceId, shipId, map[string]interface{}{
@@ -166,10 +164,6 @@ func getStarshipInfo(traceId string, shipId string) (map[string]string, int) {
 	}
 
 	defer resp.Body.Close()
-
-	logEvent("swapi_response", traceId, shipId, map[string]interface{}{
-		"status_code": resp.StatusCode,
-	})
 
 	var data struct {
 		Name       string `json:"name"`
@@ -200,14 +194,26 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	traceId := uuid.New().String()
 	w.Header().Set("X-Trace-Id", traceId)
 
+	status := "200"
+
+	defer func() {
+		httpDuration.
+			WithLabelValues(route, r.Method, status).
+			Observe(time.Since(start).Seconds())
+
+		httpRequestsTotal.
+			WithLabelValues(route, r.Method, status).
+			Inc()
+	}()
+
 	if r.Method != http.MethodGet {
-		httpRequestsTotal.WithLabelValues(route, "405").Inc()
+		status = "405"
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	if !strings.HasPrefix(r.URL.Path, route+"/") {
-		httpRequestsTotal.WithLabelValues(route, "404").Inc()
+		status = "404"
 		http.NotFound(w, r)
 		return
 	}
@@ -223,9 +229,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		cacheHitsMetric.Inc()
 		logEvent("cache_hit", traceId, shipId, nil)
 
-		httpRequestsTotal.WithLabelValues(route, "200").Inc()
-		httpDuration.WithLabelValues(route).Observe(time.Since(start).Seconds())
-
+		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(cached.data)
 		return
 	}
@@ -235,7 +239,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 
 	info, errStatus := getStarshipInfo(traceId, shipId)
 	if errStatus != 0 {
-		httpRequestsTotal.WithLabelValues(route, "502").Inc()
+		status = "502"
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
@@ -253,13 +257,15 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 
 	cacheMutex.Lock()
 	starshipCache[shipId] = CacheItem{
-		data:      info,
+		data: map[string]string{
+			"ship":       info["ship"],
+			"model":      info["model"],
+			"crew":       info["crew"],
+			"passengers": info["passengers"],
+		},
 		expiresAt: time.Now().Add(30 * time.Second),
 	}
 	cacheMutex.Unlock()
-
-	httpRequestsTotal.WithLabelValues(route, "200").Inc()
-	httpDuration.WithLabelValues(route).Observe(time.Since(start).Seconds())
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)

@@ -1,0 +1,24 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: deathstar-slo
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  groups:
+  - name: deathstar-slo
+    rules:
+    - alert: DeathStarHighErrorRate
+      expr: |
+        (
+          sum(rate(http_requests_total{status!="200"}[5m]))
+          /
+          sum(rate(http_requests_total[5m]))
+        ) > 0.01
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Alta taxa de erro na API DeathStar"
+        description: "Mais de 1% das requisições estão falhando"
