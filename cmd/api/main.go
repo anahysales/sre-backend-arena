@@ -16,6 +16,10 @@ import (
 
 const route = "/deathstar-analysis"
 
+// =========================
+// CACHE
+// =========================
+
 type CacheItem struct {
 	data      map[string]string
 	expiresAt time.Time
@@ -24,9 +28,22 @@ type CacheItem struct {
 var (
 	starshipCache = make(map[string]CacheItem)
 	cacheMutex    sync.RWMutex
+)
 
-	rateLimiter = time.Tick(200 * time.Millisecond)
+// =========================
+// BULKHEAD (NOVO)
+// =========================
+var swapiSemaphore = make(chan struct{}, 20)
 
+// =========================
+// RATE LIMITER
+// =========================
+var rateLimiter = time.Tick(200 * time.Millisecond)
+
+// =========================
+// METRICS
+// =========================
+var (
 	httpRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "http_requests_total",
@@ -128,9 +145,10 @@ func calculateThreat(crewStr, passengersStr string) (int, string) {
 }
 
 // =========================
-// SWAPI
+// SWAPI (COM BULKHEAD)
 // =========================
 func getStarshipInfo(traceId string, shipId string) (map[string]string, int) {
+
 	url := "https://swapi.py4e.com/api/starships/" + shipId + "/"
 
 	client := http.Client{Timeout: 3 * time.Second}
@@ -139,6 +157,9 @@ func getStarshipInfo(traceId string, shipId string) (map[string]string, int) {
 	var err error
 
 	for attempt := 1; attempt <= 2; attempt++ {
+
+		// 🔥 BULKHEAD AQUI
+		swapiSemaphore <- struct{}{}
 		<-rateLimiter
 
 		logEvent("retry_attempt", traceId, shipId, map[string]interface{}{
@@ -146,6 +167,8 @@ func getStarshipInfo(traceId string, shipId string) (map[string]string, int) {
 		})
 
 		resp, err = client.Get(url)
+
+		<-swapiSemaphore
 
 		if err == nil && resp.StatusCode == http.StatusOK {
 			break
@@ -189,21 +212,16 @@ func getStarshipInfo(traceId string, shipId string) (map[string]string, int) {
 // HANDLER
 // =========================
 func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
 
+	start := time.Now()
 	traceId := uuid.New().String()
 	w.Header().Set("X-Trace-Id", traceId)
 
 	status := "200"
 
 	defer func() {
-		httpDuration.
-			WithLabelValues(route, r.Method, status).
-			Observe(time.Since(start).Seconds())
-
-		httpRequestsTotal.
-			WithLabelValues(route, r.Method, status).
-			Inc()
+		httpDuration.WithLabelValues(route, r.Method, status).Observe(time.Since(start).Seconds())
+		httpRequestsTotal.WithLabelValues(route, r.Method, status).Inc()
 	}()
 
 	if r.Method != http.MethodGet {
@@ -212,14 +230,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !strings.HasPrefix(r.URL.Path, route+"/") {
-		status = "404"
-		http.NotFound(w, r)
-		return
-	}
-
 	shipId := strings.TrimPrefix(r.URL.Path, route+"/")
-	shipId = strings.Trim(shipId, "/ ")
 
 	cacheMutex.RLock()
 	cached, ok := starshipCache[shipId]
