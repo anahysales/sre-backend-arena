@@ -1,89 +1,85 @@
 # SRE Backend Arena — Architecture & System Design
 
-## 1. Visão Geral
+## 1. Visão geral
 
-O sistema **Death Star Analysis API** é uma aplicação escrita em Go projetada para análise de starships com base em dados externos da SWAPI, com foco em:
+A **Death Star Analysis API** é um serviço em Go que simula análise de naves com base em dados da SWAPI.
 
-* Resiliência sob carga
-* Observabilidade completa
-* Controle de latência
-* Simulação de falhas em dependências externas
-* Execução em ambiente Kubernetes (k3d)
+O foco do projeto é testar padrões de SRE em um cenário controlado:
 
-O sistema foi projetado como um desafio de SRE, simulando cenários reais de degradação de serviços dependentes.
-
----
-
-## 2. Arquitetura Geral
-
-### Componentes principais
-
-* **API Go (deathstar-api)**
-* **SWAPI (dependência externa)**
-* **Kubernetes (k3d cluster local)**
-* **Prometheus (coleta de métricas)**
-* **Grafana (visualização de SLOs e métricas)**
-* **k6 (load testing)**
-
-### Fluxo de requisição
-
-```
-Client → NodePort / Port-forward → Go API → Cache → SWAPI → Response
-```
+- comportamento sob carga
+- falhas em dependências externas
+- observabilidade completa
+- controle de latência
+- execução em Kubernetes local (k3d)
 
 ---
 
-## 3. API (Implementação Go)
+## 2. Arquitetura
 
-### Endpoint principal
+### Componentes
 
-```
+- API em Go (`deathstar-api`)
+- SWAPI (dependência externa)
+- Kubernetes (k3d local)
+- Prometheus (métricas)
+- Grafana (dashboards e SLOs)
+- k6 (load testing)
+
+### Fluxo
+
+Client → Service → Cache → SWAPI → Response
+
+---
+
+## 3. API
+
+### Endpoint
+
 GET /deathstar-analysis/{ship_id}
-```
 
-### Responsabilidades:
+### O que a API faz
 
-* Consulta de dados na SWAPI
-* Cálculo de threat score
-* Classificação de risco da nave
-* Cache de respostas
-* Emissão de métricas e logs estruturados
+- busca dados da nave na SWAPI
+- calcula threat score
+- classifica nível de ameaça
+- aplica cache local
+- expõe métricas e logs estruturados
 
 ---
 
 ## 4. Cache
 
-Implementado como cache **in-memory thread-safe**:
+Cache em memória com proteção de concorrência:
 
-* `sync.RWMutex` para concorrência segura
-* TTL de 30 segundos
-* Key baseada em `ship_id`
+- sync.RWMutex
+- TTL de 30s
+- chave baseada em ship_id
 
-### Objetivo:
+### Objetivo
 
-* Reduzir chamadas à SWAPI
-* Melhorar performance em cache hits
-* Diminuir variabilidade sob carga
+- reduzir chamadas na SWAPI
+- melhorar latência em cache hit
+- estabilizar carga sob stress
 
 ---
 
-## 5. Estratégia de Retry e Resiliência
+## 5. Retry e resiliência
 
-### Configuração atual:
+Configuração atual:
 
-* Timeout HTTP: **3 segundos**
-* Retry: **2 tentativas**
-* Backoff: linear (200ms × tentativa)
+- timeout HTTP: 3s
+- até 2 tentativas
+- backoff linear (200ms por tentativa)
 
-### Comportamento:
+### Comportamento
 
-* Em falha da SWAPI, o sistema tenta novamente antes de falhar
-* Após esgotar tentativas, retorna `502 Bad Gateway`
+- falha na SWAPI → retry automático
+- esgotou tentativas → retorna 502
 
-### Limitação atual:
+### Limitação atual
 
-* Não há circuit breaker implementado
-* Dependência forte da SWAPI sob carga
+- ainda não há circuit breaker
+- dependência forte da SWAPI sob carga
 
 ---
 
@@ -91,39 +87,33 @@ Implementado como cache **in-memory thread-safe**:
 
 ### Métricas (Prometheus)
 
-* `http_requests_total`
-* `http_request_duration_seconds`
-* `cache_hits_total`
-* `cache_miss_total`
+- http_requests_total
+- http_request_duration_seconds
+- cache_hits_total
+- cache_miss_total
 
-### Logs estruturados
+### Logs
 
-Formato JSON com:
+Logs estruturados em JSON contendo:
 
-* `trace_id`
-* `ship_id`
-* `event`
-* `timestamp`
-* `extra metadata`
-
-### Objetivo:
-
-* Rastreabilidade ponta a ponta
-* Análise de performance por requisição
-* Debug distribuído
+- trace_id
+- ship_id
+- event
+- timestamp
+- metadados adicionais
 
 ---
 
-## 7. SLOs e Monitoramento
+## 7. SLOs e monitoramento
 
-O sistema define métricas de qualidade:
+As métricas principais monitoradas:
 
-* Latência (p95)
-* Taxa de erro
-* Taxa de tráfego
-* Performance de cache
+- latência (p95)
+- taxa de erro
+- throughput
+- eficiência de cache
 
-Alertas são definidos via Prometheus rules.
+Alertas são definidos via Prometheus Rules.
 
 ---
 
@@ -131,62 +121,62 @@ Alertas são definidos via Prometheus rules.
 
 ### Kubernetes (k3d)
 
-* Deployment do serviço Go
-* Service ClusterIP + NodePort
-* ServiceMonitor para Prometheus
+- deployment da API
+- service ClusterIP + NodePort
+- integração com Prometheus
 
-### Acesso externo
+### Acesso
 
-* Port-forward usado para testes locais
-* NodePort configurado para exposição do serviço
-
----
-
-## 9. Load Testing
-
-Ferramenta: **k6**
-
-### Cenário atual:
-
-* até 50 VUs
-* ramp-up progressivo
-* duração ~2 minutos
-
-### Resultados observados:
-
-* Alta taxa de erro sob carga (~95%)
-* Latência p95 elevada (~18s)
-* Gargalo identificado na dependência externa (SWAPI)
+- port-forward para desenvolvimento local
+- NodePort para testes externos
 
 ---
 
-## 10. Limitações Conhecidas
+## 9. Load testing
 
-* Circuit breaker não implementado
-* Retry não exponencial (linear)
-* SWAPI é gargalo crítico sob carga
-* Concorrência externa não limitada agressivamente
-* Latência elevada sob stress
+Ferramenta: k6
 
----
+### Cenário atual
 
-## 11. Próximos Passos (Roadmap Técnico)
+- até 50 VUs
+- ramp-up progressivo
+- duração ~2 minutos
 
-* Implementação de circuit breaker
-* Fallback de resposta degradada
-* Otimização de concorrência externa
-* Redução de latência p95 para <500ms
-* Melhoria de throughput para 8k–10k RPS
+### Resultado observado
+
+- alta taxa de erro sob carga (~95%)
+- latência p95 alta (~18s)
+- gargalo principal: SWAPI
 
 ---
 
-## 12. Conclusão
+## 10. Limitações atuais
 
-O sistema já possui boa base de:
+- não há circuit breaker
+- retry linear (não exponencial)
+- SWAPI é ponto único de falha
+- concorrência externa ainda agressiva
+- latência instável sob carga
 
-* Observabilidade
-* Cache
-* Instrumentação
-* Estrutura em Kubernetes
+---
 
-O principal gap atual está na **resiliência avançada sob falha de dependência externa**, que será o foco da próxima evolução.
+## 11. Próximos passos
+
+- circuit breaker
+- fallback degradado
+- controle de concorrência mais fino
+- redução de p95 (<500ms)
+- aumento de throughput (8k–10k RPS)
+
+---
+
+## 12. Resumo
+
+Hoje o sistema já cobre bem:
+
+- observabilidade
+- cache
+- instrumentação
+- execução em k8s
+
+O principal ponto de evolução está na resiliência contra falha de dependência externa, que é onde entram circuit breaker e fallback.
