@@ -118,6 +118,10 @@ var (
 		prometheus.CounterOpts{Name: "circuit_open_total"},
 	)
 
+	retryTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "retry_total"},
+	)
+
 	externalRateLimitedTotal = prometheus.NewCounter(
 		prometheus.CounterOpts{Name: "external_rate_limited_total"},
 	)
@@ -132,6 +136,7 @@ func main() {
 	prometheus.MustRegister(httpDuration)
 	prometheus.MustRegister(fallbackTotal)
 	prometheus.MustRegister(circuitOpenTotal)
+	prometheus.MustRegister(retryTotal)
 	prometheus.MustRegister(externalRateLimitedTotal)
 
 	http.HandleFunc(route+"/", deathstarAnalysisHandler)
@@ -177,6 +182,9 @@ func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 	maxRetries := 3
 
 	for i := 0; i < maxRetries; i++ {
+		if i > 0 {
+			retryTotal.Inc()
+		}
 
 		<-rateLimiter
 		externalRateLimitedTotal.Inc()
