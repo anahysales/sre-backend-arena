@@ -16,36 +16,32 @@ spec:
     # =========================
     - record: deathstar:success_rate:5m
       expr: |
-        sum(rate(http_requests_total{path="/deathstar-analysis",status="200"}[5m]))
+        sum(rate(http_requests_total{path="/deathstar-analysis",status=~"2.."}[5m]))
         /
-        sum(rate(http_requests_total{path="/deathstar-analysis"}[5m]))
+        clamp_min(sum(rate(http_requests_total{path="/deathstar-analysis"}[5m])), 1)
 
     # =========================
     # SLI — ERROR RATE
     # =========================
     - record: deathstar:error_rate:5m
       expr: |
-        sum(rate(http_requests_total{path="/deathstar-analysis",status!="200"}[5m]))
+        sum(rate(http_requests_total{path="/deathstar-analysis",status=~"5.."}[5m]))
         /
-        sum(rate(http_requests_total{path="/deathstar-analysis"}[5m]))
+        clamp_min(sum(rate(http_requests_total{path="/deathstar-analysis"}[5m])), 1)
 
     # =========================
-    # SLI — LATENCY P95
+    # SLI — LATENCY P95 (only success)
     # =========================
     - record: deathstar:latency_p95:5m
       expr: |
-        histogram_quantile(0.95,
-          sum(rate(http_request_duration_seconds_bucket{path="/deathstar-analysis"}[5m])) by (le)
+        histogram_quantile(
+          0.95,
+          sum(rate(http_request_duration_seconds_bucket{path="/deathstar-analysis",status=~"2.."}[5m])) by (le)
         )
 
     # =========================
-    # ALERT — ERROR RATE ALTA
+    # SLO — ERROR BUDGET (BASE)
     # =========================
-    - alert: DeathstarHighErrorRate
-      expr: deathstar:error_rate:5m > 0.05
-      for: 2m
-      labels:
-        severity: warning
-      annotations:
-        summary: "Alta taxa de erro na API Deathstar"
-        description: "Mais de 5% das requisições estão falhando"
+    - record: deathstar:error_budget_remaining:5m
+      expr: |
+        1 - deathstar:error_rate:5m

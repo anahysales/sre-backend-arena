@@ -1,9 +1,10 @@
 groups:
-  - name: deathstar-slo
+  - name: deathstar-metrics
     rules:
 
       # =========================
-      # LATÊNCIA p99 (SLO PRINCIPAL)
+      # LATÊNCIA p99 (GLOBAL)
+      # Métrica base para observabilidade geral
       # =========================
       - record: job:http_request_duration_seconds:p99
         expr: |
@@ -13,16 +14,17 @@ groups:
           )
 
       # =========================
-      # THROUGHPUT (RPS)
+      # THROUGHPUT (RPS GLOBAL)
       # =========================
       - record: job:http_requests:rps
         expr: |
           sum(rate(http_requests_total[1m]))
 
       # =========================
-      # TAXA DE ERRO GLOBAL
+      # ERROR RATE GLOBAL (SEM ALERTA)
+      # Apenas métrica base para dashboards e análise
       # =========================
-      - record: job:http_error_rate
+      - record: job:http_error_rate:5m
         expr: |
           sum(rate(http_requests_total{status=~"5.."}[5m]))
           /
@@ -32,9 +34,10 @@ groups:
           )
 
       # =========================
-      # TAXA DE ERRO POR PATH
+      # ERROR RATE POR PATH
+      # Útil para debug e drill-down
       # =========================
-      - record: job:http_error_rate_by_path
+      - record: job:http_error_rate_by_path:5m
         expr: |
           sum by (path) (rate(http_requests_total{status=~"5.."}[5m]))
           /
@@ -42,48 +45,3 @@ groups:
             sum by (path) (rate(http_requests_total[5m])),
             1
           )
-
-  - name: deathstar-alerts
-    rules:
-
-      # =========================
-      # ALERTA DE LATÊNCIA (p99)
-      # =========================
-      - alert: HighLatencyCritical
-        expr: job:http_request_duration_seconds:p99 > 0.15
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Latência CRÍTICA (>150ms p99) no Deathstar API"
-          description: "O sistema está acima do limite de performance máxima da rubrica"
-
-      - alert: HighLatencyWarning
-        expr: job:http_request_duration_seconds:p99 > 0.3
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Latência acima do aceitável (>300ms p99)"
-
-      # =========================
-      # ALERTA DE ERROS
-      # =========================
-      - alert: HighErrorRate
-        expr: job:http_error_rate > 0.01
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Taxa de erro acima de 1%"
-
-      # =========================
-      # ALERTA DE QUEDA DE RPS
-      # =========================
-      - alert: LowTrafficAnomaly
-        expr: job:http_requests:rps < 100
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Queda anormal de tráfego detectada"

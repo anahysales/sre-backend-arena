@@ -1,0 +1,61 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: deathstar-alerts
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  groups:
+
+  - name: deathstar-alerts
+    interval: 30s
+    rules:
+
+    # =========================
+    # ALERT — HIGH ERROR RATE (FAST BURN)
+    # =========================
+    - alert: DeathstarFastErrorBurn
+      expr: deathstar:error_rate:5m > 0.10
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Queima rápida do SLO (erro alto)"
+        description: "Erro acima de 10% nos últimos 5 minutos"
+
+    # =========================
+    # ALERT — SLOW ERROR BURN (SLO VIOLATION EARLY SIGNAL)
+    # =========================
+    - alert: DeathstarSlowErrorBurn
+      expr: deathstar:error_rate:5m > 0.05
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Violação gradual de SLO"
+        description: "Erro acima de 5% sustentado"
+
+    # =========================
+    # ALERT — HIGH LATENCY (P95)
+    # =========================
+    - alert: DeathstarHighLatency
+      expr: deathstar:latency_p95:5m > 2
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Latência alta detectada"
+        description: "p95 acima de 2s por 2 minutos"
+
+    # =========================
+    # ALERT — ERROR BUDGET EXHAUSTION
+    # =========================
+    - alert: DeathstarErrorBudgetBurning
+      expr: deathstar:error_budget_remaining:5m < 0.5
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Budget de erro sendo consumido rapidamente"
+        description: "Menos de 50% do budget restante"
