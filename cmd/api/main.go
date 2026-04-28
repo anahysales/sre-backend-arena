@@ -18,6 +18,8 @@ import (
 
 const route = "/deathstar-analysis"
 
+var swapiBaseURL = "https://swapi.py4e.com/api/starships"
+
 // cache simples com TTL
 type CacheItem struct {
 	data      map[string]string
@@ -173,7 +175,7 @@ func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 		return nil, http.StatusServiceUnavailable
 	}
 
-	url := "https://swapi.py4e.com/api/starships/" + shipId + "/"
+	url := swapiBaseURL + "/" + shipId + "/"
 	client := http.Client{Timeout: 3 * time.Second}
 
 	var resp *http.Response
