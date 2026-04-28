@@ -5,7 +5,9 @@ import (
 	"strings"
 )
 
+// calcula threat score baseado em crew + passengers
 func CalculateThreat(crewStr, passengersStr string) (int, string) {
+
 	parse := func(s string) int {
 		s = strings.ReplaceAll(s, ",", "")
 		val, err := strconv.Atoi(s)
@@ -19,10 +21,12 @@ func CalculateThreat(crewStr, passengersStr string) (int, string) {
 	passengers := parse(passengersStr)
 
 	score := (crew + passengers) / 10000
+
 	if score > 100 {
 		score = 100
 	}
 
+	// classificação de ameaça
 	classification := ""
 
 	switch {

@@ -7,7 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"strconv"
+
+	"sre-backend-arena/internal/service"
 
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
@@ -133,36 +134,6 @@ func logEvent(event, traceId, shipId string, extra map[string]interface{}) {
 
 	b, _ := json.Marshal(log)
 	fmt.Println(string(b))
-}
-
-// regra do threat score
-func calculateThreat(crewStr, passengersStr string) (int, string) {
-
-	parse := func(s string) int {
-		s = strings.ReplaceAll(s, ",", "")
-		v, err := strconv.Atoi(s)
-		if err != nil {
-			return 0
-		}
-		return v
-	}
-
-	score := (parse(crewStr) + parse(passengersStr)) / 10000
-
-	if score > 100 {
-		score = 100
-	}
-
-	switch {
-	case score < 20:
-		return score, "low_threat"
-	case score < 50:
-		return score, "medium_threat"
-	case score < 80:
-		return score, "high_threat"
-	default:
-		return score, "critical"
-	}
 }
 
 // chama SWAPI com proteção básica
@@ -291,7 +262,8 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 
 	info, _ := getStarshipInfo(traceId, shipId)
 
-	score, class := calculateThreat(info["crew"], info["passengers"])
+	// calcula threat usando service (fonte única da verdade)
+	score, class := service.CalculateThreat(info["crew"], info["passengers"])
 
 	resp := map[string]interface{}{
 		"ship":        info["ship"],
