@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"strings"
 	"sync"
@@ -30,6 +31,9 @@ var (
 
 // limita concorrência pra não explodir a SWAPI
 var swapiSemaphore = make(chan struct{}, 20)
+
+// rate limit simples (token bucket)
+var rateLimiter = time.Tick(100 * time.Millisecond) // ~10 req/s
 
 // circuit breaker básico
 type CircuitBreaker struct {
@@ -105,6 +109,19 @@ var (
 		},
 		[]string{"path", "method", "status"},
 	)
+
+	// novas métricas de confiabilidade
+	fallbackTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "fallback_total"},
+	)
+
+	circuitOpenTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "circuit_open_total"},
+	)
+
+	externalRateLimitedTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "external_rate_limited_total"},
+	)
 )
 
 func main() {
@@ -114,6 +131,10 @@ func main() {
 	prometheus.MustRegister(cacheHitsMetric)
 	prometheus.MustRegister(cacheMissMetric)
 	prometheus.MustRegister(httpDuration)
+
+	prometheus.MustRegister(fallbackTotal)
+	prometheus.MustRegister(circuitOpenTotal)
+	prometheus.MustRegister(externalRateLimitedTotal)
 
 	http.HandleFunc(route+"/", deathstarAnalysisHandler)
 	http.HandleFunc("/health", healthHandler)
@@ -136,7 +157,7 @@ func logEvent(event, traceId, shipId string, extra map[string]interface{}) {
 	fmt.Println(string(b))
 }
 
-// chama SWAPI com proteção básica
+// chama SWAPI com proteção avançada
 func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 
 	if shipId == "" {
@@ -145,6 +166,7 @@ func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 
 	if !cb.allow() {
 		logEvent("circuit_open", traceId, shipId, nil)
+		circuitOpenTotal.Inc()
 		return nil, http.StatusServiceUnavailable
 	}
 
@@ -154,7 +176,13 @@ func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 	var resp *http.Response
 	var err error
 
-	for i := 1; i <= 2; i++ {
+	maxRetries := 3
+
+	for i := 0; i < maxRetries; i++ {
+
+		// rate limit client-side
+		<-rateLimiter
+		externalRateLimitedTotal.Inc()
 
 		swapiSemaphore <- struct{}{}
 		resp, err = client.Get(url)
@@ -171,12 +199,16 @@ func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 			resp.Body.Close()
 		}
 
-		time.Sleep(time.Duration(200*i) * time.Millisecond)
+		// retry exponencial com jitter
+		backoff := time.Duration(100*(1<<i)) * time.Millisecond
+		jitter := time.Duration(rand.Intn(100)) * time.Millisecond
+		time.Sleep(backoff + jitter)
 	}
 
-	// se SWAPI falhar, devolve fallback pra não quebrar tudo
+	// fallback controlado
 	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
 		logEvent("swapi_fallback", traceId, shipId, nil)
+		fallbackTotal.Inc()
 
 		return map[string]string{
 			"ship":       "unknown",
@@ -197,6 +229,7 @@ func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		logEvent("decode_error", traceId, shipId, nil)
+		fallbackTotal.Inc()
 
 		return map[string]string{
 			"ship":       "unknown",
@@ -262,7 +295,6 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 
 	info, _ := getStarshipInfo(traceId, shipId)
 
-	// calcula threat usando service (fonte única da verdade)
 	score, class := service.CalculateThreat(info["crew"], info["passengers"])
 
 	resp := map[string]interface{}{
@@ -274,7 +306,6 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		"class":       class,
 	}
 
-	// salva no cache
 	cacheMutex.Lock()
 	starshipCache[shipId] = CacheItem{
 		data: map[string]string{
