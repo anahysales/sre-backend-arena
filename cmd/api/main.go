@@ -16,7 +16,7 @@ import (
 
 const route = "/deathstar-analysis"
 
-// cache simples com TTL
+// cache simples com expiração
 type CacheItem struct {
 	data      map[string]string
 	expiresAt time.Time
@@ -27,13 +27,13 @@ var (
 	cacheMutex    sync.RWMutex
 )
 
-// limita concorrência contra SWAPI
+// controle de concorrência para chamadas externas
 var swapiSemaphore = make(chan struct{}, 20)
 
-// controla rate de chamadas externas
-var rateLimiter = time.NewTicker(200 * time.Millisecond)
+// limite simples de taxa para chamadas na SWAPI
+var rateLimiter = time.NewTicker(50 * time.Millisecond)
 
-// circuit breaker simples
+// circuit breaker básico
 type CircuitBreaker struct {
 	mu sync.Mutex
 
@@ -87,25 +87,19 @@ func (c *CircuitBreaker) failure() {
 	}
 }
 
-// métricas básicas
+// métricas Prometheus
 var (
 	httpRequestsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "http_requests_total",
-		},
+		prometheus.CounterOpts{Name: "http_requests_total"},
 		[]string{"path", "method", "status"},
 	)
 
 	cacheHitsMetric = prometheus.NewCounter(
-		prometheus.CounterOpts{
-			Name: "cache_hits_total",
-		},
+		prometheus.CounterOpts{Name: "cache_hits_total"},
 	)
 
 	cacheMissMetric = prometheus.NewCounter(
-		prometheus.CounterOpts{
-			Name: "cache_miss_total",
-		},
+		prometheus.CounterOpts{Name: "cache_miss_total"},
 	)
 
 	httpDuration = prometheus.NewHistogramVec(
@@ -118,7 +112,7 @@ var (
 )
 
 func main() {
-	println("API rodando na porta 8081")
+	fmt.Println("API rodando na porta 8081")
 
 	prometheus.MustRegister(httpRequestsTotal)
 	prometheus.MustRegister(cacheHitsMetric)
@@ -132,7 +126,7 @@ func main() {
 	panic(http.ListenAndServe(":8081", nil))
 }
 
-// log estruturado simples
+// logs estruturados simples
 func logEvent(event, traceId, shipId string, extra map[string]interface{}) {
 	log := map[string]interface{}{
 		"event":    event,
@@ -146,7 +140,7 @@ func logEvent(event, traceId, shipId string, extra map[string]interface{}) {
 	fmt.Println(string(b))
 }
 
-// regra de ameaça
+// cálculo de risco da nave
 func calculateThreat(crewStr, passengersStr string) (int, string) {
 	parse := func(s string) int {
 		s = strings.ReplaceAll(s, ",", "")
@@ -174,7 +168,7 @@ func calculateThreat(crewStr, passengersStr string) (int, string) {
 	}
 }
 
-// chamada externa com proteção
+// chamada para SWAPI com proteção
 func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 
 	if shipId == "" {
@@ -245,7 +239,7 @@ func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 	}, 0
 }
 
-// handler principal
+// handler principal da API
 func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
@@ -304,7 +298,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		"crew":        info["crew"],
 		"passengers":  info["passengers"],
 		"threatScore": score,
-		"class":      class,
+		"class":       class,
 	}
 
 	cacheMutex.Lock()
@@ -322,7 +316,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// health simples
+// health check simples
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok"))
 }
