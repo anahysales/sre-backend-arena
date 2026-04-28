@@ -1,0 +1,50 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: deathstar-api-rules
+  namespace: default
+spec:
+  groups:
+    - name: deathstar-api-recording
+      rules:
+        - record: rps
+          expr: sum(rate(http_requests_total{path="/deathstar-analysis"}[1m]))
+
+        - record: error_rate
+          expr: |
+            sum(rate(http_requests_total{status=~"5..", path="/deathstar-analysis"}[1m]))
+            /
+            sum(rate(http_requests_total{path="/deathstar-analysis"}[1m]) + 1e-9)
+
+        - record: latency_p95
+          expr: |
+            histogram_quantile(
+              0.95,
+              sum(rate(http_request_duration_seconds_bucket{path="/deathstar-analysis"}[1m])) by (le)
+            )
+
+    - name: deathstar-api-alerts
+      rules:
+        - alert: HighErrorRate
+          expr: error_rate > 0.05
+          for: 2m
+          labels:
+            severity: critical
+
+        - alert: HighLatency
+          expr: latency_p95 > 0.3
+          for: 2m
+          labels:
+            severity: warning
+
+        - alert: HighFallbackRate
+          expr: rate(fallback_total[1m]) > 1
+          for: 2m
+          labels:
+            severity: warning
+
+        - alert: CircuitOpen
+          expr: rate(circuit_open_total[1m]) > 0
+          for: 1m
+          labels:
+            severity: critical
