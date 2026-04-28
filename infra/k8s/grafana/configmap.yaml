@@ -13,48 +13,70 @@ data:
       "schemaVersion": 38,
       "version": 1,
       "refresh": "5s",
+
       "panels": [
         {
           "type": "timeseries",
-          "title": "RPS (Throughput)",
+          "title": "RPS (Requests per Second)",
           "targets": [
             {
-              "expr": "job:http_requests:rps",
-              "legendFormat": "RPS"
+              "expr": "sum(rate(http_requests_total[5m]))",
+              "legendFormat": "rps"
             }
           ]
         },
+
         {
           "type": "timeseries",
-          "title": "Error Rate (SLO)",
+          "title": "Error Rate",
           "targets": [
             {
-              "expr": "job:http_error_rate",
-              "legendFormat": "Error Rate"
+              "expr": "sum(rate(http_requests_total{status!=\"200\"}[5m])) / sum(rate(http_requests_total[5m]))",
+              "legendFormat": "error rate"
             }
           ]
         },
+
         {
           "type": "timeseries",
-          "title": "Latency p99",
+          "title": "Latency p95",
           "targets": [
             {
-              "expr": "job:http_request_duration_seconds:p99",
-              "legendFormat": "p99"
+              "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+              "legendFormat": "p95"
             }
           ]
         },
+
         {
           "type": "timeseries",
-          "title": "Cache Performance",
+          "title": "Cache Hits",
           "targets": [
             {
-              "expr": "cache_hits_total",
-              "legendFormat": "hits"
-            },
+              "expr": "rate(cache_hits_total[5m])",
+              "legendFormat": "hits/sec"
+            }
+          ]
+        },
+
+        {
+          "type": "timeseries",
+          "title": "Cache Misses",
+          "targets": [
             {
-              "expr": "cache_miss_total",
-              "legendFormat": "misses"
+              "expr": "rate(cache_miss_total[5m])",
+              "legendFormat": "miss/sec"
+            }
+          ]
+        },
+
+        {
+          "type": "timeseries",
+          "title": "Success Rate (SLO)",
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{status=\"200\"}[5m])) / sum(rate(http_requests_total[5m]))",
+              "legendFormat": "success rate"
             }
           ]
         }
