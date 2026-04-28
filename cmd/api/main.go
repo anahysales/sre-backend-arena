@@ -190,6 +190,16 @@ func parseNumber(value string) int {
 	return number
 }
 
+// fallback padrão para resposta degradada
+func fallbackStarshipInfo() map[string]string {
+	return map[string]string{
+		"ship":       "unknown",
+		"model":      "unknown",
+		"crew":       "0",
+		"passengers": "0",
+	}
+}
+
 // chama SWAPI com proteção avançada
 func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 
@@ -200,7 +210,9 @@ func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 	if !cb.allow() {
 		logEvent("circuit_open", traceId, shipId, nil)
 		circuitOpenTotal.Inc()
-		return nil, http.StatusServiceUnavailable
+		fallbackTotal.Inc()
+
+		return fallbackStarshipInfo(), http.StatusOK
 	}
 
 	url := swapiBaseURL + "/" + shipId + "/"
@@ -243,12 +255,7 @@ func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 		logEvent("swapi_fallback", traceId, shipId, nil)
 		fallbackTotal.Inc()
 
-		return map[string]string{
-			"ship":       "unknown",
-			"model":      "unknown",
-			"crew":       "0",
-			"passengers": "0",
-		}, http.StatusOK
+		return fallbackStarshipInfo(), http.StatusOK
 	}
 
 	defer resp.Body.Close()
@@ -264,12 +271,7 @@ func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 		logEvent("decode_error", traceId, shipId, nil)
 		fallbackTotal.Inc()
 
-		return map[string]string{
-			"ship":       "unknown",
-			"model":      "unknown",
-			"crew":       "0",
-			"passengers": "0",
-		}, http.StatusOK
+		return fallbackStarshipInfo(), http.StatusOK
 	}
 
 	return map[string]string{
