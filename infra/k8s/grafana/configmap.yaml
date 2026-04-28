@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-deathstar
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  dashboard.json: |
+    {
+      "title": "Deathstar API - SRE Overview",
+      "timezone": "browser",
+      "schemaVersion": 38,
+      "version": 1,
+      "refresh": "5s",
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "RPS (Throughput)",
+          "targets": [
+            {
+              "expr": "job:http_requests:rps",
+              "legendFormat": "RPS"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Error Rate (SLO)",
+          "targets": [
+            {
+              "expr": "job:http_error_rate",
+              "legendFormat": "Error Rate"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Latency p99",
+          "targets": [
+            {
+              "expr": "job:http_request_duration_seconds:p99",
+              "legendFormat": "p99"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Cache Performance",
+          "targets": [
+            {
+              "expr": "cache_hits_total",
+              "legendFormat": "hits"
+            },
+            {
+              "expr": "cache_miss_total",
+              "legendFormat": "misses"
+            }
+          ]
+        }
+      ]
+    }
