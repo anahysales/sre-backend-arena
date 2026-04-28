@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/27156218/README.md)
+
 # ☠️ Death Star Threat Analysis API
 
 > Solução para o **Cenário 2** do desafio [SRE Backend Arena](https://github.com/kailimadev/sre-backend-arena)
@@ -124,12 +124,42 @@ docker compose up --build
 A API estará disponível em `http://localhost:8081`.
 Prometheus: `http://localhost:9090` · Grafana: `http://localhost:3000`
 
-### Kubernetes (k3d)
+### Via Makefile
+```bash
+make run          # roda a API localmente
+make test         # roda todos os testes
+make coverage     # gera relatório de cobertura HTML
+make build        # compila para bin/api
+make docker-build # builda a imagem Docker
+make validate     # test + helm-template + helm-dry-run
+make all          # fluxo completo: clean → test → build → docker → helm
+```
+
+### Kubernetes com Helm
+```bash
+# Instalar/atualizar via Helm
+make helm-install
+
+# Deploy completo (build da imagem + helm)
+make deploy
+
+# Acompanhar status
+make status
+
+# Acessar a API
+make port-forward
+
+# Acessar Prometheus e Grafana
+make prometheus
+make grafana
+```
+
+### Kubernetes manual
 ```bash
 # Subir cluster local
 k3d cluster create deathstar
 
-# Deploy da stack completa
+# Deploy da stack
 kubectl apply -f infra/k8s/
 kubectl apply -f infra/prometheus/
 
@@ -137,9 +167,14 @@ kubectl apply -f infra/prometheus/
 kubectl port-forward svc/deathstar-api 8081:8081
 ```
 
+### Load test
+```bash
+make loadtest  # requer k6 instalado
+```
+
 ### Exemplo de uso
 ```bash
-# Nave normal
+# Análise de nave
 curl http://localhost:8081/deathstar-analysis/9
 
 # Health check
@@ -154,10 +189,10 @@ curl http://localhost:8081/metrics
 {
   "ship": "Death Star",
   "model": "DS-1 Orbital Battle Station",
-  "crew": "342,953",
-  "passengers": "843,342",
+  "crew": 342953,
+  "passengers": 843342,
   "threatScore": 100,
-  "class": "galactic_superweapon",
+  "classification": "galactic_superweapon",
   "degraded": false
 }
 ```
@@ -167,10 +202,10 @@ curl http://localhost:8081/metrics
 {
   "ship": "unknown",
   "model": "unknown",
-  "crew": "0",
-  "passengers": "0",
+  "crew": 0,
+  "passengers": 0,
   "threatScore": 0,
-  "class": "low_threat",
+  "classification": "low_threat",
   "degraded": true
 }
 ```
@@ -201,6 +236,9 @@ go test ./internal/service/... -v -cover
 
 # Apenas integração
 go test ./cmd/api/... -v -cover
+
+# Via Makefile com relatório
+make coverage
 ```
 
 Os testes de integração usam `httptest.NewServer()` para mockar a SWAPI — nenhuma chamada real é feita durante os testes.
@@ -218,30 +256,41 @@ Cobertura mínima exigida: **≥ 70%**
 │   └── main_integration_test.go   # Testes de integração com mock da SWAPI
 ├── internal/
 │   └── service/
-│       ├── threat.go              # Lógica de calculateThreat (isolada e testável)
+│       ├── threat.go              # Lógica de CalculateThreat (isolada e testável)
 │       └── service_test.go        # Testes unitários de CalculateThreat
+├── helm/deathstar-api/
+│   ├── Chart.yaml                 # Metadados do chart
+│   ├── values.yaml                # Valores configuráveis (réplicas, recursos, HPA)
+│   └── templates/
+│       ├── deployment.yaml        # Deploy K8s via Helm
+│       ├── service.yaml           # Service
+│       ├── hpa.yaml               # HorizontalPodAutoscaler
+│       ├── pdb.yaml               # PodDisruptionBudget
+│       ├── servicemonitor.yaml    # Integração Prometheus Operator
+│       └── prometheusrule.yaml    # Alertas como objeto K8s nativo
 ├── infra/
 │   ├── k8s/
-│   │   ├── deployment.yaml        # 2 réplicas, RollingUpdate, probes
-│   │   ├── service.yaml           # ClusterIP + NodePort
+│   │   ├── deployment.yaml        # 2 réplicas, RollingUpdate, 3 tipos de probe
+│   │   ├── service.yaml           # ClusterIP
 │   │   ├── hpa.yaml               # HPA: 2–5 réplicas por CPU
 │   │   ├── pdb.yaml               # PodDisruptionBudget (minAvailable: 1)
-│   │   ├── servicemonitor.yaml    # Integração Prometheus Operator
-│   │   ├── prometheusrule.yaml    # Alertas como objeto K8s nativo
+│   │   ├── servicemonitor.yaml    # ServiceMonitor para Prometheus Operator
+│   │   ├── prometheusrule.yaml    # PrometheusRule com alertas
 │   │   └── grafana/
-│   │       ├── configmap.yaml     # Dashboard Grafana como ConfigMap
+│   │       ├── configmap.yaml     # Dashboard Grafana como ConfigMap K8s
 │   │       ├── datasource.yaml    # Datasource Prometheus como código
 │   │       └── deathstar-dashboard.json
 │   └── prometheus/
 │       ├── prometheus.yml         # Configuração do Prometheus
 │       ├── rules.yml              # Recording rules
-│       ├── alerts.yml             # Alertas fast/slow burn
+│       ├── alerts.yml             # Alertas fast/slow burn SLO
 │       └── slo.yml                # SLOs como PrometheusRule
 ├── scripts/
 │   └── loadtest.js                # Load test k6 com ramp-up progressivo
 ├── docs/
 │   └── architecture.md            # Decisões de design e limitações
-├── Dockerfile                     # Multi-stage build
+├── Makefile                       # 20+ comandos para dev, test, deploy e ops
+├── Dockerfile                     # Multi-stage build (golang:1.23-alpine)
 └── docker-compose.yml             # Stack local: API + Prometheus + Grafana
 ```
 
@@ -256,11 +305,13 @@ Cobertura mínima exigida: **≥ 70%**
 | 📦 | **Cache Master** | Cache in-memory thread-safe com TTL | `sync.RWMutex` + TTL 30s + `cloneMap()` defensivo |
 | 🌊 | **Graceful Degradation** | Fallback que mantém o serviço disponível | `degraded: true` na resposta quando SWAPI falha |
 | 🔁 | **Retry Resilience** | Backoff exponencial com jitter | `100*(1<<i)ms + rand(100ms)` em até 3 tentativas |
-| 🔍 | **Trace Propagator** | Rastreabilidade completa por request | Header `X-Trace-Id` (UUID v4) em todas as respostas + logs estruturados |
+| 🔍 | **Trace Propagator** | Rastreabilidade completa por request | Header `X-Trace-Id` (UUID v4) em todas as respostas + logs estruturados em JSON |
 | 📊 | **SLO Guardian** | SLOs definidos com alertas automáticos | `alerts.yml` + `slo.yml` + `prometheusrule.yaml` com fast/slow burn |
-| 📈 | **Grafana Observer** | Dashboard de observabilidade como código | `configmap.yaml` + `datasource.yaml` no K8s |
-| 🚀 | **K8s Production Ready** | Deploy com alta disponibilidade | HPA (2–5 réplicas), PDB, RollingUpdate com maxUnavailable: 0, 3 tipos de probe |
-| 🧪 | **Test Coverage** | Cobertura ≥ 70% com testes de integração reais | `main_integration_test.go` com mock da SWAPI via `httptest` |
+| 📈 | **Grafana Observer** | Dashboard de observabilidade como código | `configmap.yaml` + `datasource.yaml` como ConfigMap K8s |
+| 🚀 | **K8s Production Ready** | Deploy com alta disponibilidade | HPA (2–5 réplicas), PDB, RollingUpdate com `maxUnavailable: 0`, readiness + liveness + startup probes |
+| ⛵ | **Helm Navigator** | Infraestrutura gerenciada via Helm Chart | `helm/deathstar-api` com values.yaml configurável e todos os recursos K8s como templates |
+| 🧪 | **Test Coverage** | Cobertura ≥ 70% com testes de integração reais | `main_integration_test.go` com mock da SWAPI via `httptest.NewServer()` |
+| 🛠️ | **Makefile DX** | Developer experience com automação completa | `make validate`, `make deploy`, `make status`, `make loadtest` e 15+ outros comandos |
 
 ---
 
