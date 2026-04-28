@@ -20,16 +20,17 @@ jobs:
           go-version: '1.23'
 
       - name: Download dependencies
-        run: go mod tidy
+        run: go mod download
+
+      - name: Format check
+        run: |
+          test -z "$(gofmt -l .)"
 
       - name: Vet
         run: go vet ./...
 
-      # =========================
-      # TESTES + COVERAGE (CORRIGIDO)
-      # =========================
       - name: Run tests with coverage
-        run: go test ./internal/service -v -coverprofile=coverage.out
+        run: go test ./... -v -coverprofile=coverage.out
 
       - name: Check coverage threshold (>=70%)
         run: |
@@ -41,15 +42,12 @@ jobs:
             exit 1
           fi
 
-      # =========================
-      # BUILD
-      # =========================
       - name: Build
-        run: go build -o api cmd/api/main.go
+        run: go build -o api ./cmd/api
 
-      # =========================
-      # ARTIFACT (OPCIONAL)
-      # =========================
+      - name: Helm template validation
+        run: helm template deathstar-api ./helm/deathstar-api
+
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         with:
