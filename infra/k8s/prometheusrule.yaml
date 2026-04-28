@@ -3,6 +3,8 @@ kind: PrometheusRule
 metadata:
   name: deathstar-api-rules
   namespace: default
+  labels:
+    release: monitoring
 spec:
   groups:
     - name: deathstar-api-recording
@@ -11,20 +13,20 @@ spec:
           expr: sum(rate(http_requests_total{path="/deathstar-analysis"}[1m]))
 
         - record: deathstar_api:fallback_rate:1m
-          expr: sum(rate(fallback_total[1m]))
+          expr: sum(rate(fallback_total[1m])) or vector(0)
 
         - record: deathstar_api:circuit_open_rate:1m
-          expr: sum(rate(circuit_open_total[1m]))
+          expr: sum(rate(circuit_open_total[1m])) or vector(0)
 
         - record: deathstar_api:retry_rate:1m
-          expr: sum(rate(retry_total[1m]))
+          expr: sum(rate(retry_total[1m])) or vector(0)
 
         - record: deathstar_api:error_rate:5m
           expr: |
             (
-              sum(rate(http_requests_total{status=~"5..", path="/deathstar-analysis"}[5m]))
+              (sum(rate(http_requests_total{status=~"5..", path="/deathstar-analysis"}[5m])) or vector(0))
               +
-              sum(rate(fallback_total[5m]))
+              (sum(rate(fallback_total[5m])) or vector(0))
             )
             /
             clamp_min(sum(rate(http_requests_total{path="/deathstar-analysis"}[5m])), 0.001)

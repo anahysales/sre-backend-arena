@@ -22,7 +22,7 @@ var swapiBaseURL = "https://swapi.py4e.com/api/starships"
 
 // cache simples com TTL
 type CacheItem struct {
-	data      map[string]string
+	data      map[string]interface{}
 	expiresAt time.Time
 }
 
@@ -127,6 +127,10 @@ var (
 	externalRateLimitedTotal = prometheus.NewCounter(
 		prometheus.CounterOpts{Name: "external_rate_limited_total"},
 	)
+
+	degradedResponsesTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "degraded_responses_total"},
+	)
 )
 
 func main() {
@@ -140,6 +144,7 @@ func main() {
 	prometheus.MustRegister(circuitOpenTotal)
 	prometheus.MustRegister(retryTotal)
 	prometheus.MustRegister(externalRateLimitedTotal)
+	prometheus.MustRegister(degradedResponsesTotal)
 
 	http.HandleFunc(route+"/", deathstarAnalysisHandler)
 	http.HandleFunc("/health", healthHandler)
@@ -160,6 +165,16 @@ func logEvent(event, traceId, shipId string, extra map[string]interface{}) {
 
 	b, _ := json.Marshal(log)
 	fmt.Println(string(b))
+}
+
+// copia mapa para evitar race condition no cache
+func cloneMap(src map[string]interface{}) map[string]interface{} {
+	dst := make(map[string]interface{}, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+
+	return dst
 }
 
 // chama SWAPI com proteção avançada
@@ -289,7 +304,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		cacheHitsMetric.Inc()
 		logEvent("cache_hit", traceId, shipId, nil)
 
-		json.NewEncoder(w).Encode(cached.data)
+		json.NewEncoder(w).Encode(cloneMap(cached.data))
 		return
 	}
 
@@ -302,6 +317,9 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 
 	// detecta degradação
 	degraded := info["ship"] == "unknown"
+	if degraded {
+		degradedResponsesTotal.Inc()
+	}
 
 	resp := map[string]interface{}{
 		"ship":        info["ship"],
@@ -315,12 +333,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 
 	cacheMutex.Lock()
 	starshipCache[shipId] = CacheItem{
-		data: map[string]string{
-			"ship":       info["ship"],
-			"model":      info["model"],
-			"crew":       info["crew"],
-			"passengers": info["passengers"],
-		},
+		data:      cloneMap(resp),
 		expiresAt: time.Now().Add(30 * time.Second),
 	}
 	cacheMutex.Unlock()

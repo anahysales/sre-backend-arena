@@ -23,6 +23,29 @@ func resetTestState() {
 	cb.mu.Unlock()
 }
 
+func newTestAPI(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(route+"/", deathstarAnalysisHandler)
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+func decodeResponse(t *testing.T, resp *http.Response) map[string]any {
+	t.Helper()
+	defer resp.Body.Close()
+
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	return got
+}
+
 func TestDeathstarAnalysisSuccessReal(t *testing.T) {
 	resetTestState()
 
@@ -37,22 +60,23 @@ func TestDeathstarAnalysisSuccessReal(t *testing.T) {
 
 	swapiBaseURL = swapi.URL
 
-	req := httptest.NewRequest(http.MethodGet, route+"/9", nil)
-	rec := httptest.NewRecorder()
-
-	deathstarAnalysisHandler(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", rec.Code)
+	api := newTestAPI(t)
+	resp, err := api.Client().Get(api.URL + route + "/9")
+	if err != nil {
+		t.Fatalf("failed to call API: %v", err)
 	}
 
-	var got map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
 	}
+	got := decodeResponse(t, resp)
 
 	if got["ship"] != "Death Star" {
 		t.Fatalf("expected ship Death Star, got %#v", got["ship"])
+	}
+
+	if got["model"] != "DS-1" {
+		t.Fatalf("expected model DS-1, got %#v", got["model"])
 	}
 
 	if got["degraded"] != false {
@@ -76,18 +100,16 @@ func TestDeathstarAnalysisFallbackWhenSWAPIFails(t *testing.T) {
 	beforeFallback := testutil.ToFloat64(fallbackTotal)
 	beforeRetry := testutil.ToFloat64(retryTotal)
 
-	req := httptest.NewRequest(http.MethodGet, route+"/9", nil)
-	rec := httptest.NewRecorder()
-	deathstarAnalysisHandler(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected status 200 with fallback, got %d", rec.Code)
+	api := newTestAPI(t)
+	resp, err := api.Client().Get(api.URL + route + "/9")
+	if err != nil {
+		t.Fatalf("failed to call API: %v", err)
 	}
 
-	var got map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200 with fallback, got %d", resp.StatusCode)
 	}
+	got := decodeResponse(t, resp)
 
 	if got["ship"] != "unknown" {
 		t.Fatalf("expected fallback ship unknown, got %#v", got["ship"])
@@ -123,24 +145,44 @@ func TestDeathstarAnalysisCacheHit(t *testing.T) {
 	swapiBaseURL = swapi.URL
 	beforeHits := testutil.ToFloat64(cacheHitsMetric)
 
-	firstReq := httptest.NewRequest(http.MethodGet, route+"/15", nil)
-	firstRec := httptest.NewRecorder()
-	deathstarAnalysisHandler(firstRec, firstReq)
+	api := newTestAPI(t)
 
-	if firstRec.Code != http.StatusOK {
-		t.Fatalf("first request expected status 200, got %d", firstRec.Code)
+	firstResp, err := api.Client().Get(api.URL + route + "/15")
+	if err != nil {
+		t.Fatalf("failed to call API first time: %v", err)
 	}
-
-	secondReq := httptest.NewRequest(http.MethodGet, route+"/15", nil)
-	secondRec := httptest.NewRecorder()
-	deathstarAnalysisHandler(secondRec, secondReq)
-
-	if secondRec.Code != http.StatusOK {
-		t.Fatalf("second request expected status 200, got %d", secondRec.Code)
+	if firstResp.StatusCode != http.StatusOK {
+		t.Fatalf("first request expected status 200, got %d", firstResp.StatusCode)
 	}
+	firstGot := decodeResponse(t, firstResp)
+
+	secondResp, err := api.Client().Get(api.URL + route + "/15")
+	if err != nil {
+		t.Fatalf("failed to call API second time: %v", err)
+	}
+	if secondResp.StatusCode != http.StatusOK {
+		t.Fatalf("second request expected status 200, got %d", secondResp.StatusCode)
+	}
+	secondGot := decodeResponse(t, secondResp)
 
 	if atomic.LoadInt32(&upstreamCalls) != 1 {
 		t.Fatalf("expected exactly 1 upstream call due to cache hit, got %d", upstreamCalls)
+	}
+
+	if secondGot["ship"] != "Executor" {
+		t.Fatalf("expected cached ship Executor, got %#v", secondGot["ship"])
+	}
+
+	if secondGot["degraded"] != false {
+		t.Fatalf("expected degraded false on cache hit, got %#v", secondGot["degraded"])
+	}
+
+	if firstGot["threatScore"] != secondGot["threatScore"] {
+		t.Fatalf("expected cache hit to keep threatScore, got first=%#v second=%#v", firstGot["threatScore"], secondGot["threatScore"])
+	}
+
+	if firstGot["class"] != secondGot["class"] {
+		t.Fatalf("expected cache hit to keep class, got first=%#v second=%#v", firstGot["class"], secondGot["class"])
 	}
 
 	if testutil.ToFloat64(cacheHitsMetric) <= beforeHits {
