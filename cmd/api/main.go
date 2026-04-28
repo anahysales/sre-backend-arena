@@ -16,10 +16,7 @@ import (
 
 const route = "/deathstar-analysis"
 
-// =========================
-// CACHE
-// =========================
-
+// cache simples com TTL
 type CacheItem struct {
 	data      map[string]string
 	expiresAt time.Time
@@ -30,24 +27,71 @@ var (
 	cacheMutex    sync.RWMutex
 )
 
-// =========================
-// BULKHEAD
-// =========================
+// limita concorrência contra SWAPI
 var swapiSemaphore = make(chan struct{}, 20)
 
-// =========================
-// RATE LIMITER (CORRIGIDO)
-// =========================
+// controla rate de chamadas externas
 var rateLimiter = time.NewTicker(200 * time.Millisecond)
 
-// =========================
-// METRICS
-// =========================
+// circuit breaker simples
+type CircuitBreaker struct {
+	mu sync.Mutex
+
+	failures int
+	lastFail time.Time
+
+	state string
+
+	threshold int
+	timeout   time.Duration
+}
+
+var cb = CircuitBreaker{
+	state:     "CLOSED",
+	threshold: 5,
+	timeout:   10 * time.Second,
+}
+
+func (c *CircuitBreaker) allow() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.state == "OPEN" {
+		if time.Since(c.lastFail) > c.timeout {
+			c.state = "HALF"
+			return true
+		}
+		return false
+	}
+
+	return true
+}
+
+func (c *CircuitBreaker) success() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.failures = 0
+	c.state = "CLOSED"
+}
+
+func (c *CircuitBreaker) failure() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.failures++
+	c.lastFail = time.Now()
+
+	if c.failures >= c.threshold {
+		c.state = "OPEN"
+	}
+}
+
+// métricas básicas
 var (
 	httpRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "http_requests_total",
-			Help: "Total de requisições HTTP",
 		},
 		[]string{"path", "method", "status"},
 	)
@@ -55,21 +99,18 @@ var (
 	cacheHitsMetric = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Name: "cache_hits_total",
-			Help: "Total de cache hits",
 		},
 	)
 
 	cacheMissMetric = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Name: "cache_miss_total",
-			Help: "Total de cache misses",
 		},
 	)
 
 	httpDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "http_request_duration_seconds",
-			Help:    "Duração das requisições HTTP",
 			Buckets: prometheus.DefBuckets,
 		},
 		[]string{"path", "method", "status"},
@@ -77,7 +118,7 @@ var (
 )
 
 func main() {
-	println("SERVIDOR GO INICIANDO NA PORTA 8081")
+	println("API rodando na porta 8081")
 
 	prometheus.MustRegister(httpRequestsTotal)
 	prometheus.MustRegister(cacheHitsMetric)
@@ -91,39 +132,32 @@ func main() {
 	panic(http.ListenAndServe(":8081", nil))
 }
 
-// =========================
-// LOG
-// =========================
-func logEvent(event string, traceId string, shipId string, extra map[string]interface{}) {
+// log estruturado simples
+func logEvent(event, traceId, shipId string, extra map[string]interface{}) {
 	log := map[string]interface{}{
-		"event":     event,
-		"trace_id":  traceId,
-		"ship_id":   shipId,
-		"timestamp": time.Now().Format(time.RFC3339),
-		"extra":     extra,
+		"event":    event,
+		"trace_id": traceId,
+		"ship_id":  shipId,
+		"time":     time.Now().Format(time.RFC3339),
+		"extra":    extra,
 	}
 
-	data, _ := json.Marshal(log)
-	fmt.Println(string(data))
+	b, _ := json.Marshal(log)
+	fmt.Println(string(b))
 }
 
-// =========================
-// THREAT SCORE
-// =========================
+// regra de ameaça
 func calculateThreat(crewStr, passengersStr string) (int, string) {
 	parse := func(s string) int {
 		s = strings.ReplaceAll(s, ",", "")
-		val, err := strconv.Atoi(s)
+		v, err := strconv.Atoi(s)
 		if err != nil {
 			return 0
 		}
-		return val
+		return v
 	}
 
-	crew := parse(crewStr)
-	passengers := parse(passengersStr)
-
-	score := (crew + passengers) / 10000
+	score := (parse(crewStr) + parse(passengersStr)) / 10000
 	if score > 100 {
 		score = 100
 	}
@@ -136,17 +170,20 @@ func calculateThreat(crewStr, passengersStr string) (int, string) {
 	case score < 80:
 		return score, "high_threat"
 	default:
-		return score, "galactic_superweapon"
+		return score, "critical"
 	}
 }
 
-// =========================
-// SWAPI
-// =========================
-func getStarshipInfo(traceId string, shipId string) (map[string]string, int) {
+// chamada externa com proteção
+func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 
 	if shipId == "" {
 		return nil, http.StatusBadRequest
+	}
+
+	if !cb.allow() {
+		logEvent("circuit_open", traceId, shipId, nil)
+		return nil, http.StatusServiceUnavailable
 	}
 
 	url := "https://swapi.py4e.com/api/starships/" + shipId + "/"
@@ -155,28 +192,30 @@ func getStarshipInfo(traceId string, shipId string) (map[string]string, int) {
 	var resp *http.Response
 	var err error
 
-	for attempt := 1; attempt <= 2; attempt++ {
+	for i := 1; i <= 2; i++ {
 
-		<-swapiSemaphore
+		swapiSemaphore <- struct{}{}
 		<-rateLimiter.C
-
-		logEvent("retry_attempt", traceId, shipId, map[string]interface{}{
-			"attempt": attempt,
-		})
 
 		resp, err = client.Get(url)
 
-		if resp != nil {
-			defer resp.Body.Close()
+		if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
+			cb.failure()
+		} else {
+			cb.success()
 		}
 
-		if err == nil && resp != nil && resp.StatusCode == http.StatusOK {
-			swapiSemaphore <- struct{}{}
+		if resp != nil && resp.StatusCode == http.StatusOK {
 			break
 		}
 
-		time.Sleep(time.Duration(200*attempt) * time.Millisecond)
-		swapiSemaphore <- struct{}{}
+		if resp != nil {
+			resp.Body.Close()
+		}
+
+		time.Sleep(time.Duration(200*i) * time.Millisecond)
+
+		<-swapiSemaphore
 	}
 
 	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
@@ -184,11 +223,13 @@ func getStarshipInfo(traceId string, shipId string) (map[string]string, int) {
 		return nil, http.StatusBadGateway
 	}
 
+	defer resp.Body.Close()
+
 	var data struct {
-		Name       string `json:"name"`
-		Model      string `json:"model"`
-		Crew       string `json:"crew"`
-		Passengers string `json:"passengers"`
+		Name       string
+		Model      string
+		Crew       string
+		Passengers string
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
@@ -204,9 +245,7 @@ func getStarshipInfo(traceId string, shipId string) (map[string]string, int) {
 	}, 0
 }
 
-// =========================
-// HANDLER
-// =========================
+// handler principal
 func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
@@ -216,13 +255,15 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	status := "200"
 
 	defer func() {
-		httpDuration.WithLabelValues(route, r.Method, status).Observe(time.Since(start).Seconds())
+		httpDuration.WithLabelValues(route, r.Method, status).
+			Observe(time.Since(start).Seconds())
+
 		httpRequestsTotal.WithLabelValues(route, r.Method, status).Inc()
 	}()
 
 	if r.Method != http.MethodGet {
 		status = "405"
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -241,7 +282,6 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		cacheHitsMetric.Inc()
 		logEvent("cache_hit", traceId, shipId, nil)
 
-		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(cached.data)
 		return
 	}
@@ -252,19 +292,19 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	info, errStatus := getStarshipInfo(traceId, shipId)
 	if errStatus != 0 {
 		status = "502"
-		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
 
-	score, classification := calculateThreat(info["crew"], info["passengers"])
+	score, class := calculateThreat(info["crew"], info["passengers"])
 
-	response := map[string]interface{}{
-		"ship":           info["ship"],
-		"model":          info["model"],
-		"crew":           info["crew"],
-		"passengers":     info["passengers"],
-		"threatScore":    score,
-		"classification": classification,
+	resp := map[string]interface{}{
+		"ship":        info["ship"],
+		"model":       info["model"],
+		"crew":        info["crew"],
+		"passengers":  info["passengers"],
+		"threatScore": score,
+		"class":      class,
 	}
 
 	cacheMutex.Lock()
@@ -279,14 +319,10 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	cacheMutex.Unlock()
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(resp)
 }
 
-// =========================
-// HEALTH CHECK (AJUSTADO)
-// =========================
+// health simples
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
 }
