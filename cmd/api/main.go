@@ -33,7 +33,7 @@ var (
 var swapiSemaphore = make(chan struct{}, 20)
 
 // rate limit simples (token bucket)
-var rateLimiter = time.Tick(100 * time.Millisecond) // ~10 req/s
+var rateLimiter = time.Tick(100 * time.Millisecond)
 
 // circuit breaker básico
 type CircuitBreaker struct {
@@ -110,7 +110,6 @@ var (
 		[]string{"path", "method", "status"},
 	)
 
-	// novas métricas de confiabilidade
 	fallbackTotal = prometheus.NewCounter(
 		prometheus.CounterOpts{Name: "fallback_total"},
 	)
@@ -131,7 +130,6 @@ func main() {
 	prometheus.MustRegister(cacheHitsMetric)
 	prometheus.MustRegister(cacheMissMetric)
 	prometheus.MustRegister(httpDuration)
-
 	prometheus.MustRegister(fallbackTotal)
 	prometheus.MustRegister(circuitOpenTotal)
 	prometheus.MustRegister(externalRateLimitedTotal)
@@ -180,7 +178,6 @@ func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 
 	for i := 0; i < maxRetries; i++ {
 
-		// rate limit client-side
 		<-rateLimiter
 		externalRateLimitedTotal.Inc()
 
@@ -199,13 +196,11 @@ func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 			resp.Body.Close()
 		}
 
-		// retry exponencial com jitter
 		backoff := time.Duration(100*(1<<i)) * time.Millisecond
 		jitter := time.Duration(rand.Intn(100)) * time.Millisecond
 		time.Sleep(backoff + jitter)
 	}
 
-	// fallback controlado
 	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
 		logEvent("swapi_fallback", traceId, shipId, nil)
 		fallbackTotal.Inc()
@@ -276,7 +271,6 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// cache hit
 	cacheMutex.RLock()
 	cached, ok := starshipCache[shipId]
 	cacheMutex.RUnlock()
@@ -289,13 +283,15 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// cache miss
 	cacheMissMetric.Inc()
 	logEvent("cache_miss", traceId, shipId, nil)
 
 	info, _ := getStarshipInfo(traceId, shipId)
 
 	score, class := service.CalculateThreat(info["crew"], info["passengers"])
+
+	// detecta degradação
+	degraded := info["ship"] == "unknown"
 
 	resp := map[string]interface{}{
 		"ship":        info["ship"],
@@ -304,6 +300,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		"passengers":  info["passengers"],
 		"threatScore": score,
 		"class":       class,
+		"degraded":    degraded,
 	}
 
 	cacheMutex.Lock()
@@ -321,7 +318,6 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// health simples
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok"))
 }
