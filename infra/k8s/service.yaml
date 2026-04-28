@@ -5,11 +5,10 @@ metadata:
   labels:
     app: deathstar-api
 spec:
-  type: NodePort
+  type: ClusterIP
   selector:
     app: deathstar-api
   ports:
     - name: http
       port: 80
       targetPort: 8081
-      nodePort: 30007

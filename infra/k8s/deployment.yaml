@@ -3,7 +3,12 @@ kind: Deployment
 metadata:
   name: deathstar-api
 spec:
-  replicas: 1
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: deathstar-api
@@ -18,10 +23,39 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8081
+
+          # readiness: pod pronto para receber tráfego
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          # liveness: reinicia se travar
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          # startup: evita matar app durante boot
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            failureThreshold: 30
+            periodSeconds: 2
+
           resources:
-            limits:
-              cpu: "500m"
-              memory: "128Mi"
             requests:
-              cpu: "200m"
+              cpu: "100m"
               memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
