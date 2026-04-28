@@ -1,0 +1,97 @@
+{{- $monitoring := default dict .Values.monitoring }}
+{{- if (default true $monitoring.enabled) }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Release.Name }}-rules
+  namespace: default
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: deathstar-api-recording
+      rules:
+        - record: deathstar_api:request_rate:1m
+          expr: sum(rate(http_requests_total{path="/deathstar-analysis"}[1m]))
+
+        - record: deathstar_api:fallback_rate:1m
+          expr: sum(rate(fallback_total[1m])) or vector(0)
+
+        - record: deathstar_api:circuit_open_rate:1m
+          expr: sum(rate(circuit_open_total[1m])) or vector(0)
+
+        - record: deathstar_api:retry_rate:1m
+          expr: sum(rate(retry_total[1m])) or vector(0)
+
+        - record: deathstar_api:error_rate:5m
+          expr: |
+            (
+              (sum(rate(http_requests_total{status=~"5..", path="/deathstar-analysis"}[5m])) or vector(0))
+              +
+              (sum(rate(fallback_total[5m])) or vector(0))
+            )
+            /
+            clamp_min(sum(rate(http_requests_total{path="/deathstar-analysis"}[5m])), 0.001)
+
+        - record: deathstar_api:success_rate:5m
+          expr: |
+            1 - deathstar_api:error_rate:5m
+
+        - record: deathstar_api:latency_p95:5m
+          expr: |
+            histogram_quantile(
+              0.95,
+              sum(rate(http_request_duration_seconds_bucket{path="/deathstar-analysis"}[5m])) by (le)
+            )
+
+        - record: deathstar_api:slo_error_budget_burn_rate:5m
+          expr: |
+            deathstar_api:error_rate:5m / 0.01
+
+    - name: deathstar-api-alerts
+      rules:
+        - alert: DeathstarApiHighErrorBudgetBurnRate
+          expr: deathstar_api:slo_error_budget_burn_rate:5m > 14.4
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Deathstar API está consumindo error budget rapidamente"
+            description: "A taxa de erro/degradação está acima do permitido para o SLO de 99%."
+
+        - alert: DeathstarApiLowSuccessRate
+          expr: deathstar_api:success_rate:5m < 0.99
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Deathstar API abaixo do SLO de disponibilidade"
+            description: "O success rate real está abaixo de 99%, considerando falhas 5xx e fallback degradado."
+
+        - alert: DeathstarApiHighLatency
+          expr: deathstar_api:latency_p95:5m > 0.3
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Deathstar API com alta latência"
+            description: "A latência p95 está acima de 300ms."
+
+        - alert: DeathstarApiHighFallbackRate
+          expr: deathstar_api:fallback_rate:1m > 1
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Deathstar API com alto uso de fallback"
+            description: "A aplicação está retornando respostas degradadas com frequência."
+
+        - alert: DeathstarApiCircuitOpen
+          expr: deathstar_api:circuit_open_rate:1m > 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Circuit breaker da Deathstar API está aberto"
+            description: "Chamadas externas estão sendo bloqueadas pelo circuit breaker."
+{{- end }}

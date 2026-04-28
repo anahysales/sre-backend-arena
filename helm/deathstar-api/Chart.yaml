@@ -1,0 +1,6 @@
+apiVersion: v2
+name: deathstar-api
+description: Deathstar API - SRE Backend Arena
+type: application
+version: 0.1.0
+appVersion: "1.0"
