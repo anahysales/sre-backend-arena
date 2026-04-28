@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -177,6 +178,18 @@ func cloneMap(src map[string]interface{}) map[string]interface{} {
 	return dst
 }
 
+// converte números da SWAPI para inteiro
+func parseNumber(value string) int {
+	clean := strings.ReplaceAll(value, ",", "")
+
+	number, err := strconv.Atoi(clean)
+	if err != nil {
+		return 0
+	}
+
+	return number
+}
+
 // chama SWAPI com proteção avançada
 func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 
@@ -313,7 +326,10 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 
 	info, _ := getStarshipInfo(traceId, shipId)
 
-	score, class := service.CalculateThreat(info["crew"], info["passengers"])
+	score, classification := service.CalculateThreat(info["crew"], info["passengers"])
+
+	crew := parseNumber(info["crew"])
+	passengers := parseNumber(info["passengers"])
 
 	// detecta degradação
 	degraded := info["ship"] == "unknown"
@@ -322,13 +338,13 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]interface{}{
-		"ship":        info["ship"],
-		"model":       info["model"],
-		"crew":        info["crew"],
-		"passengers":  info["passengers"],
-		"threatScore": score,
-		"class":       class,
-		"degraded":    degraded,
+		"ship":           info["ship"],
+		"model":          info["model"],
+		"crew":           crew,
+		"passengers":     passengers,
+		"threatScore":    score,
+		"classification": classification,
+		"degraded":       degraded,
 	}
 
 	cacheMutex.Lock()
