@@ -2,11 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
-	"time"
 	"sync"
-	"fmt"
+	"time"
 	"strconv"
 
 	"github.com/google/uuid"
@@ -16,7 +16,7 @@ import (
 
 const route = "/deathstar-analysis"
 
-// cache simples com expiração
+// cache simples com TTL
 type CacheItem struct {
 	data      map[string]string
 	expiresAt time.Time
@@ -27,21 +27,15 @@ var (
 	cacheMutex    sync.RWMutex
 )
 
-// controle de concorrência para chamadas externas
+// limita concorrência pra não explodir a SWAPI
 var swapiSemaphore = make(chan struct{}, 20)
-
-// limite simples de taxa para chamadas na SWAPI
-var rateLimiter = time.NewTicker(50 * time.Millisecond)
 
 // circuit breaker básico
 type CircuitBreaker struct {
-	mu sync.Mutex
-
-	failures int
-	lastFail time.Time
-
-	state string
-
+	mu        sync.Mutex
+	failures  int
+	lastFail  time.Time
+	state     string
 	threshold int
 	timeout   time.Duration
 }
@@ -58,7 +52,8 @@ func (c *CircuitBreaker) allow() bool {
 
 	if c.state == "OPEN" {
 		if time.Since(c.lastFail) > c.timeout {
-			c.state = "HALF"
+			c.state = "CLOSED"
+			c.failures = 0
 			return true
 		}
 		return false
@@ -87,7 +82,7 @@ func (c *CircuitBreaker) failure() {
 	}
 }
 
-// métricas Prometheus
+// métricas básicas
 var (
 	httpRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{Name: "http_requests_total"},
@@ -126,7 +121,7 @@ func main() {
 	panic(http.ListenAndServe(":8081", nil))
 }
 
-// logs estruturados simples
+// log simples pra debug
 func logEvent(event, traceId, shipId string, extra map[string]interface{}) {
 	log := map[string]interface{}{
 		"event":    event,
@@ -140,8 +135,9 @@ func logEvent(event, traceId, shipId string, extra map[string]interface{}) {
 	fmt.Println(string(b))
 }
 
-// cálculo de risco da nave
+// regra do threat score
 func calculateThreat(crewStr, passengersStr string) (int, string) {
+
 	parse := func(s string) int {
 		s = strings.ReplaceAll(s, ",", "")
 		v, err := strconv.Atoi(s)
@@ -152,6 +148,7 @@ func calculateThreat(crewStr, passengersStr string) (int, string) {
 	}
 
 	score := (parse(crewStr) + parse(passengersStr)) / 10000
+
 	if score > 100 {
 		score = 100
 	}
@@ -168,7 +165,7 @@ func calculateThreat(crewStr, passengersStr string) (int, string) {
 	}
 }
 
-// chamada para SWAPI com proteção
+// chama SWAPI com proteção básica
 func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 
 	if shipId == "" {
@@ -189,46 +186,53 @@ func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 	for i := 1; i <= 2; i++ {
 
 		swapiSemaphore <- struct{}{}
-		<-rateLimiter.C
-
 		resp, err = client.Get(url)
+		<-swapiSemaphore
 
-		if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
-			cb.failure()
-		} else {
+		if err == nil && resp != nil && resp.StatusCode == http.StatusOK {
 			cb.success()
-		}
-
-		if resp != nil && resp.StatusCode == http.StatusOK {
 			break
 		}
+
+		cb.failure()
 
 		if resp != nil {
 			resp.Body.Close()
 		}
 
 		time.Sleep(time.Duration(200*i) * time.Millisecond)
-
-		<-swapiSemaphore
 	}
 
+	// se SWAPI falhar, devolve fallback pra não quebrar tudo
 	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
-		logEvent("swapi_error", traceId, shipId, nil)
-		return nil, http.StatusBadGateway
+		logEvent("swapi_fallback", traceId, shipId, nil)
+
+		return map[string]string{
+			"ship":       "unknown",
+			"model":      "unknown",
+			"crew":       "0",
+			"passengers": "0",
+		}, http.StatusOK
 	}
 
 	defer resp.Body.Close()
 
 	var data struct {
-		Name       string
-		Model      string
-		Crew       string
-		Passengers string
+		Name       string `json:"name"`
+		Model      string `json:"model"`
+		Crew       string `json:"crew"`
+		Passengers string `json:"passengers"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		logEvent("decode_error", traceId, shipId, nil)
-		return nil, http.StatusBadGateway
+
+		return map[string]string{
+			"ship":       "unknown",
+			"model":      "unknown",
+			"crew":       "0",
+			"passengers": "0",
+		}, http.StatusOK
 	}
 
 	return map[string]string{
@@ -236,10 +240,10 @@ func getStarshipInfo(traceId, shipId string) (map[string]string, int) {
 		"model":      data.Model,
 		"crew":       data.Crew,
 		"passengers": data.Passengers,
-	}, 0
+	}, http.StatusOK
 }
 
-// handler principal da API
+// handler principal
 func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
@@ -268,6 +272,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// cache hit
 	cacheMutex.RLock()
 	cached, ok := starshipCache[shipId]
 	cacheMutex.RUnlock()
@@ -280,15 +285,11 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// cache miss
 	cacheMissMetric.Inc()
 	logEvent("cache_miss", traceId, shipId, nil)
 
-	info, errStatus := getStarshipInfo(traceId, shipId)
-	if errStatus != 0 {
-		status = "502"
-		http.Error(w, "bad gateway", http.StatusBadGateway)
-		return
-	}
+	info, _ := getStarshipInfo(traceId, shipId)
 
 	score, class := calculateThreat(info["crew"], info["passengers"])
 
@@ -301,6 +302,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 		"class":       class,
 	}
 
+	// salva no cache
 	cacheMutex.Lock()
 	starshipCache[shipId] = CacheItem{
 		data: map[string]string{
@@ -316,7 +318,7 @@ func deathstarAnalysisHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// health check simples
+// health simples
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok"))
 }

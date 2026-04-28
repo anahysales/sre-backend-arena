@@ -1,74 +1,80 @@
 {
-  "title": "Deathstar API - SRE Observability Dashboard",
-  "timezone": "browser",
-  "schemaVersion": 38,
-  "version": 1,
-  "refresh": "5s",
-  "panels": [
-
-    {
-      "type": "timeseries",
-      "title": "Throughput (RPS)",
-      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
-      "targets": [
-        {
-          "expr": "job:http_requests:rps",
-          "legendFormat": "requests/sec"
-        }
-      ]
-    },
-
-    {
-      "type": "timeseries",
-      "title": "Error Rate (SLO)",
-      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
-      "targets": [
-        {
-          "expr": "job:http_error_rate",
-          "legendFormat": "error rate"
-        }
-      ]
-    },
-
-    {
-      "type": "timeseries",
-      "title": "Latency p99",
-      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
-      "targets": [
-        {
-          "expr": "job:http_request_duration_seconds:p99",
-          "legendFormat": "p99 latency"
-        }
-      ]
-    },
-
-    {
-      "type": "timeseries",
-      "title": "Error Budget (Derived)",
-      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
-      "targets": [
-        {
-          "expr": "1 - job:http_error_rate",
-          "legendFormat": "remaining budget"
-        }
-      ]
-    },
-
-    {
-      "type": "timeseries",
-      "title": "Cache Performance",
-      "gridPos": { "x": 0, "y": 16, "w": 24, "h": 8 },
-      "targets": [
-        {
-          "expr": "cache_hits_total",
-          "legendFormat": "hits"
-        },
-        {
-          "expr": "cache_miss_total",
-          "legendFormat": "misses"
-        }
-      ]
-    }
-
-  ]
+  "dashboard": {
+    "id": null,
+    "title": "Death Star API - SRE Dashboard",
+    "tags": ["sre", "deathstar", "observability"],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "5s",
+    "panels": [
+      {
+        "type": "graph",
+        "title": "RPS - Requests per Second",
+        "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total[1m]))",
+            "legendFormat": "RPS"
+          }
+        ]
+      },
+      {
+        "type": "graph",
+        "title": "Error Rate",
+        "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total{status!=\"200\"}[5m])) / sum(rate(http_requests_total[5m]))",
+            "legendFormat": "Error Rate"
+          }
+        ]
+      },
+      {
+        "type": "graph",
+        "title": "Latency p95",
+        "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+            "legendFormat": "p95 latency"
+          }
+        ]
+      },
+      {
+        "type": "graph",
+        "title": "Cache Hit Rate",
+        "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "rate(cache_hits_total[5m]) / (rate(cache_hits_total[5m]) + rate(cache_miss_total[5m]))",
+            "legendFormat": "Hit Rate"
+          }
+        ]
+      },
+      {
+        "type": "graph",
+        "title": "Cache Miss Rate",
+        "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "rate(cache_miss_total[5m])",
+            "legendFormat": "Miss Rate"
+          }
+        ]
+      },
+      {
+        "type": "graph",
+        "title": "HTTP Requests Total",
+        "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total[5m]))",
+            "legendFormat": "requests"
+          }
+        ]
+      }
+    ]
+  },
+  "overwrite": true
 }
